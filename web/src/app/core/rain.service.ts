@@ -122,6 +122,34 @@ export interface CreateRainInput {
 
 const POLL_MS = 5_000;
 
+/** What to call a rain in a sentence: its label, or its number. */
+export function nameOf(rain: { readonly id: bigint; readonly label: string }): string {
+  return rain.label || `rain #${rain.id.toString()}`;
+}
+
+/**
+ * What entering actually bought, which is not the same in every mode.
+ *
+ * A single fixed sentence was wrong for WAVE and said so on the same screen
+ * that contradicted it. In SPLIT and ONE a ticket is standing: every future
+ * drop includes you and you never act again. In WAVE the ticket is only
+ * permission -- `_fire_wave` pays `wave_count`, which `gm` increments and
+ * every fire resets to zero, so a holder who enters and then waits is in no
+ * drop at all. Telling them "you stay in every drop after this" is the page
+ * promising money that will never arrive.
+ *
+ * The rain is named because the log is a list. Two entries reading "Entered."
+ * are indistinguishable, and entering two different rains is the ordinary
+ * thing to do -- it is what the first person to use this page did, and the
+ * log made it look like one action charged twice.
+ */
+export function enteredMessage(rain: { readonly id: bigint; readonly label: string; readonly mode: bigint }): string {
+  const name = nameOf(rain);
+  return rain.mode === WAVE
+    ? `Entered ${name}. Check in with "I am here" for each drop you want a share of.`
+    : `Entered ${name}. You are in every drop from now on.`;
+}
+
 @Injectable({ providedIn: 'root' })
 export class RainService {
   private readonly chain = inject(ChainService);
@@ -402,7 +430,7 @@ export class RainService {
     }
     await this.send('enter', (algod, appId, signing) =>
       txns.enter(algod, appId, signing, rain.id, nft?.id ?? 0, rain.mode),
-      'Entered. You stay in every drop after this.',
+      enteredMessage(rain),
     );
   }
 
@@ -412,7 +440,7 @@ export class RainService {
     if (rain === null) return;
     await this.send('gm', (algod, appId, signing) =>
       txns.gm(algod, appId, signing, rain.id, nft?.id ?? 0),
-      'Checked in for this drop.',
+      `Checked in for this drop of ${nameOf(rain)}.`,
     );
   }
 
