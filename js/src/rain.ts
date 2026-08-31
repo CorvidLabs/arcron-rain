@@ -68,18 +68,26 @@ export interface RainDeployment {
 }
 
 /**
- * Live TestNet hub. Zero until this tree deploys one.
+ * Live TestNet hub, deployed from this tree on 2026-08-31.
  *
- * The hub that ran under the arcron repository is deliberately not named here:
- * it is immutable and missing a security fix, so a front end that adopted its
- * id would be aiming users at a contract nobody can repair. The upkeep id is
- * zero for the same reason — an upkeep exists only once a hub does. The keeper
- * is a separate deployment with its own lifecycle: arcron's TestNet registry
- * is live, and is what a rain deployed from this tree registers `draw` with.
+ * `770746178` replaces the hub that ran under the arcron repository, which is
+ * immutable and predates the fix that stops a ONE draw being aimed by tickets
+ * bought after the seed is public. Nobody can repair that one, so this tree
+ * does not name it and never adopted its id. The difference is eight bytes of
+ * approval program — 4,971 here against 4,963 there — and those eight bytes
+ * are the assert.
+ *
+ * `scripts/verify_build.py --contract rain --app-id 770746178` reproduces this
+ * deployment byte for byte from this source. That check is the whole trust
+ * story for a contract with no update path, and it is worth re-running rather
+ * than believing this comment.
+ *
+ * The keeper is a separate deployment on its own lifecycle: arcron's TestNet
+ * registry is live, and upkeep 113 on it is what calls `draw` here.
  */
 export const TESTNET_RAIN: RainDeployment = {
-  appId: 0,
-  upkeepId: 0,
+  appId: 770_746_178,
+  upkeepId: 113,
   keeperAppId: 769_891_898,
   gateUnitPrefix: CORVID_UNIT_PREFIX,
 };
