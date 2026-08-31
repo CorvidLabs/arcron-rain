@@ -16,7 +16,15 @@ import os
 import algokit_utils
 
 from scripts import network as net
-from scripts.arcron import SKIP_AHEAD, KeeperClient, RegisterArgs, TopUpArgs, _box_mbr, _selector
+from scripts.arcron import (
+    SKIP_AHEAD,
+    KeeperClient,
+    RegisterArgs,
+    TopUpArgs,
+    _box_mbr,
+    _read_upkeep,
+    _selector,
+)
 from smart_contracts.artifacts.rain.rain_client import (
     BootstrapArgs,
     CreateRainArgs,
@@ -73,16 +81,13 @@ def _upkeep_for_hub(algorand, keeper_app_id: int, hub_app_id: int) -> tuple[int,
 
     Returns `(upkeep_id, balance)` so the caller can say what it topped up.
     """
-    from scripts import keeper_bot
-
     algod = algorand.client.algod
     for box in algod.application_boxes(keeper_app_id).get("boxes", []):
         name = base64.b64decode(box["name"])
         if name[:1] != b"u" or len(name) != 9:
             continue
         upkeep_id = int.from_bytes(name[1:9], "big")
-        raw = base64.b64decode(algod.application_box_by_name(keeper_app_id, name)["value"])
-        upkeep = keeper_bot._decode_upkeep(upkeep_id, raw)
+        upkeep, _ = _read_upkeep(algorand, keeper_app_id, upkeep_id)
         if upkeep.target_app == hub_app_id:
             return upkeep_id, upkeep.balance
     return None
