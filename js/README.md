@@ -13,26 +13,36 @@ const rain = decodeRainRec(1n, raw.value);
 rainStanding(rain, currentRound); // 'due' | 'scheduled' | 'waiting'
 ```
 
-Three entry points, no root export:
+Four entry points, no root export:
 
 | import | what it is |
 |---|---|
-| `./rain` | box names, the box decoder, MBR and fee constants, the display helpers |
+| `./rain` | box names, the box decoder, MBR and fee constants, the live hub's id, the display helpers |
 | `./rain-abi` | every method signature, checked against the compiled artifact |
 | `./rain-txns` | `AtomicTransactionComposer` builders for the calls a person sends |
+| `./vendor` | the handful of things copied from CorvidLabs/arcron — see below |
+
+`TESTNET_RAIN` in `./rain` is the one place the deployment is written down: hub
+**770746178**, upkeep **113**, keeper app 769891898. Its docstring says why the
+previous hub's id appears nowhere, and
+`scripts/verify_build.py --contract rain --app-id 770746178` in the repository
+root is what turns that constant into something checkable.
 
 `draw` has no builder and never will: it is the Arcron hook, sent by a keeper
 on a schedule. `rain-abi.test.ts` holds the list of methods with no builder and
 the reason for each, so a gap has to be argued for rather than merely
 happening — which is how `abandon` went a whole contract's lifetime with no way
-to send it.
+to send it, and it is why `set_rain`, still without one, is at least written
+down as a gap rather than forgotten.
 
 ## Installing
 
-Nothing publishes this yet. It is consumed from inside the repository, and the
-version number will start tracking the deployment ladder once there is a
-deployment to track. If you want it before then, copy `src/` — which is what
-this package does to its own upstream, one directory down.
+**Nothing publishes this, and nothing is planned to.** It is consumed from
+inside the repository — `web/` depends on it as a workspace package — and it is
+not on npm or GitHub Packages under any name. If you want it, copy `src/`,
+which is what this package does to its own upstream one directory down. The
+version in `package.json` is `0.1.0` and means nothing; the hub id in `./rain`
+is the number that matters.
 
 `algosdk` v3 is a peer dependency you install yourself. This ships **raw
 TypeScript**, deliberately: it is the same source the tests here pin against
@@ -48,8 +58,11 @@ and by rights `vendor.ts` would be `import { … } from '@corvidlabs/arcron'`.
 It is a copy instead because that package is published to GitHub Packages,
 which will not serve a package — public or not — without a token scoped to
 `read:packages`. A dependency on it would make `bun install` fail here for
-anyone who has not been granted one, in a public repository. Sixty-odd lines of
-copy buys that back. The file says what would let it be deleted; the reasoning
+anyone who has not been granted one, in a public repository. Three hundred and
+twenty lines, 184 of them code, buys that back. It carries ALGO and token
+formatting, the signing pair, and the decoder for the one keeper box the page
+reads to know when a drop is expected. The file says what would let it be
+deleted; the reasoning
 in full is [`arcron/docs/design/split.md`](https://github.com/CorvidLabs/arcron/blob/main/docs/design/split.md),
 decision D7.
 
@@ -64,12 +77,16 @@ bun install
 bun test
 ```
 
-`rain-abi.test.ts` reads `smart_contracts/artifacts/rain/Rain.arc56.json` from
-the repository root, so the contract has to have been built (`poetry run python
--m smart_contracts build`) before the suite will load. That coupling is the
-point: a signature
+74 tests on 2026-08-31, all in `rain-abi.test.ts`. It reads
+`smart_contracts/artifacts/rain/Rain.arc56.json` from the repository root, so
+the contract has to have been built (`poetry run python -m smart_contracts
+build`) before the suite will load. That coupling is the point: a signature
 here that has drifted from the compiled contract is a failed test rather than a
 rejected transaction in front of a user.
+
+What it cannot check is that a transaction it builds is accepted by a chain.
+Nothing here talks to algod. That is settled one directory up, by the LocalNet
+demos and `web/scripts/localnet-txns.ts`.
 
 ## What it does not do
 

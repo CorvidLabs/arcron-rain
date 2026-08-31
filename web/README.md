@@ -1,14 +1,22 @@
 # Rain
 
 The page a holder reads: every pot open on the Rain hub, what each one pays,
-whether you are in it, and what it owes you.
+whether you are in it, and what it owes you. **This is the user-facing surface
+of the whole project** — for someone holding an NFT and wondering whether a
+drop is coming, this page is Rain, and the contract, the client and the keeper
+are implementation.
+
+It is served at **https://corvidlabs.xyz/rain/** and reads TestNet hub
+**770746178**, which is compiled into the bundle rather than taken from the
+URL — see [There is no `?app=`](#there-is-no-app-and-no-quarantine).
 
 Angular (standalone components, signals, zoneless) + Bun + algosdk, styled
 entirely on the CorvidLabs design system, a private repository vendored here
 under `public/brand/`.
 
-Its address is **https://corvidlabs.xyz/rain/**, and `<base href="/rain/">` in
-`src/index.html` and `baseHref` in `angular.json` both have to agree with it.
+`<base href="/rain/">` in `src/index.html` and `baseHref` in `angular.json`
+both have to agree with that address; see [Hosting it](#hosting-it) for the two
+things a build for that address must not skip.
 
 ## Rain is the user surface, Arcron is the developer one
 
@@ -71,9 +79,38 @@ bunx playwright install chromium   # once per machine
 bunx playwright test               # what the page actually renders
 ```
 
+On 2026-08-31 that is 93 unit tests and 73 rendered-page checks, all passing.
+
 It opens on **TestNet**, which is the only chain a hub exists on. LocalNet is a
 switch in the developer network picker and renders "Rain lives on TestNet",
 which is the honest answer and a state the audit covers.
+
+## Hosting it
+
+```bash
+fledge run web-build-hosted    # dist/hosted/browser/, ready for corvidlabs.xyz/rain/
+```
+
+Two things in that task are not optional, and neither of them fails loudly if
+you drop it.
+
+**`--base-href /rain/`.** `ng build` is perfectly happy to emit a page whose
+script tags resolve against the domain root. Served from a subpath they 404,
+the page never boots, and no build log says a word about it. The task passes
+the flag; `<base href="/rain/">` in `src/index.html` and `baseHref` in
+`angular.json` are the same fact written twice more, and all three have to
+agree with the canonical address.
+
+**`index.html` copied to `404.html`.** The router routes on the path, not on a
+hash, so `/rain/r/2` is a real URL the static host has never heard of. nginx
+serves `404.html` for anything it cannot find under `/rain/`, which is how that
+URL reaches the router instead of the site's own not-found page. Without the
+copy, every shared link to a single rain is dead — and a link to a single rain
+is the only kind of link anybody shares.
+
+`fledge run web-render` deliberately builds with `--base-href /` instead,
+because it serves the bundle at the root of its own port; see
+[What the page actually renders](#what-the-page-actually-renders).
 
 ## Three destinations
 
@@ -88,8 +125,20 @@ console had `rain/new` and `rain/:id`, where declaring them the wrong way round
 read "new" as an id and opened rain zero; `new` and `r/:id` share no prefix and
 cannot collide however they are ordered.
 
-Because the page routes on the path rather than on a hash, a static host needs
-`index.html` as its 404 page or a cold load of `/rain/r/2` will not resolve.
+Those paths are why a static host needs the single-page fallback described in
+[Hosting it](#hosting-it): a cold load of `/rain/r/2` reaches the router only
+if the host answers unknown paths with `index.html`.
+
+### What the page cannot send
+
+Every method a holder needs has a builder in `js/` and a control here, with one
+exception worth naming out loud: **`set_rain` has neither.** It is the only way
+a creator can raise a drip, and raising the drip is the only cure for a SPLIT
+rain that has taken on more tickets than its drip can divide — at which point
+it goes quiet and, because `_fire_split` leaves `last_rain_round` alone, reads
+as due for ever. Today that cure can only be applied from a script.
+`js/test/rain-abi.test.ts` holds that exemption and its reason, so the gap has
+to be argued for rather than merely persist.
 
 Focus moves to the routed region on every navigation but the first. A router
 that does not move focus is a router that breaks screen readers.
@@ -251,11 +300,13 @@ Screenshots and a ranked `findings.md` land in `e2e/__screenshots__/` on every
 run, passing or failing, and are attached to failures. They are the part that
 catches what no rule thought to look for.
 
-**`e2e/baseline.json`** records what is wrong today and is not being fixed yet,
-which is the type scale and the touch targets, each with its measurement and
-the reason it stands. A new finding fails the run, a recorded one getting worse
-fails the run, and a recorded one that stopped happening fails the run too,
-because a licence nothing uses any more is a licence to regress. It lost
-twenty-four entries when the keeper console's pages left this site — those were
-licences for styles that no longer exist, not fixes. Regenerate with
+**`e2e/baseline.json`** records what is wrong today and is not being fixed yet
+— the type scale, the touch targets, and cell widths in rows that render as
+cards — each with its measurement and the reason it stands. A new finding fails
+the run, a recorded one getting worse fails the run, and a recorded one that
+stopped happening fails the run too, because a licence nothing uses any more is
+a licence to regress. It holds **44** entries: 38 text-size, 4 table-cell,
+2 touch-target. That is 22 fewer than the 66 the keeper console's baseline
+carried when this site was split out of it, and those 22 were licences for
+styles that no longer exist, not fixes. Regenerate with
 `bun run scripts/write-baseline.ts`, and only after reading what changed.
