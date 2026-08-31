@@ -9,13 +9,14 @@ Run:  poetry run python -m scripts.rain_testnet_deploy --network testnet
 """
 
 import argparse
+import base64
 import logging
 import os
 
 import algokit_utils
 
 from scripts import network as net
-from scripts.arcron import SKIP_AHEAD, KeeperClient, RegisterArgs, _box_mbr, _selector
+from scripts.arcron import SKIP_AHEAD, KeeperClient, RegisterArgs, TopUpArgs, _box_mbr, _selector
 from smart_contracts.artifacts.rain.rain_client import (
     BootstrapArgs,
     CreateRainArgs,
@@ -56,6 +57,35 @@ def _payment(algorand, sender: str, receiver: str, amount: int):
             amount=algokit_utils.AlgoAmount(micro_algo=amount),
         )
     )
+
+
+def _upkeep_for_hub(algorand, keeper_app_id: int, hub_app_id: int) -> tuple[int, int] | None:
+    """The upkeep already driving this hub, if there is one.
+
+    This step used to register unconditionally, under a comment claiming it
+    registered "if this hub has none" -- there was no such check, and the
+    module docstring promised the whole script was idempotent. Re-running it
+    against a live hub therefore bought a *second* upkeep on the same target:
+    another box minimum balance, another escrow, and two upkeeps paying two
+    keepers to call one `draw()` forever. Nothing would have reported it as
+    wrong. It was caught only because a rate-limited node happened to fail the
+    transaction first.
+
+    Returns `(upkeep_id, balance)` so the caller can say what it topped up.
+    """
+    from scripts import keeper_bot
+
+    algod = algorand.client.algod
+    for box in algod.application_boxes(keeper_app_id).get("boxes", []):
+        name = base64.b64decode(box["name"])
+        if name[:1] != b"u" or len(name) != 9:
+            continue
+        upkeep_id = int.from_bytes(name[1:9], "big")
+        raw = base64.b64decode(algod.application_box_by_name(keeper_app_id, name)["value"])
+        upkeep = keeper_bot._decode_upkeep(upkeep_id, raw)
+        if upkeep.target_app == hub_app_id:
+            return upkeep_id, upkeep.balance
+    return None
 
 
 def main(argv: list[str] | None = None) -> None:
@@ -135,8 +165,27 @@ def main(argv: list[str] | None = None) -> None:
         default_sender=deployer.address,
         default_signer=deployer.signer,
     )
-    # Register a fresh hourly upkeep if this hub has none we can see from
-    # this run. The caller records the id in js/src/rain.ts.
+    existing = _upkeep_for_hub(algorand, args.keeper_app_id, rain.app_id)
+    if existing is not None:
+        upkeep_id, balance = existing
+        keeper.send.top_up(
+            args=TopUpArgs(
+                upkeep_id=upkeep_id,
+                funding_payment=_payment(
+                    algorand, deployer.address, keeper.app_address, UPKEEP_FUNDING_MICROALGO
+                ),
+            )
+        )
+        logger.info(
+            f"  Upkeep {upkeep_id} already drives hub {rain.app_id}; topped it up "
+            f"{UPKEEP_FUNDING_MICROALGO} µALGO (was {balance})"
+        )
+        logger.info("Record in js/src/rain.ts TESTNET_RAIN:")
+        logger.info(f"  appId: {rain.app_id}")
+        logger.info(f"  upkeepId: {upkeep_id}")
+        logger.info(f"  Corvid SPLIT rain id: {split_id}")
+        return
+
     registered = keeper.send.register(
         args=RegisterArgs(
             mbr_payment=_payment(

@@ -60,6 +60,7 @@ from smart_contracts.artifacts.keeper.keeper_client import (
     KeeperClient,
     KeeperFactory,
     RegisterArgs,
+    TopUpArgs,
 )
 
 logger = logging.getLogger(__name__)
@@ -73,6 +74,7 @@ __all__ = [
     "KeeperClient",
     "KeeperFactory",
     "RegisterArgs",
+    "TopUpArgs",
     "SKIP_AHEAD",
     "Shutdown",
     "Upkeep",
