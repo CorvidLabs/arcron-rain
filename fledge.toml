@@ -49,6 +49,16 @@ js-test = "cd js && bun test"
 # component the page composes rather than owns.
 web-test = "cd web && bun test"
 web-build = "cd web && bun run ng build"
+# The build that actually gets served, at corvidlabs.xyz/rain/.
+#
+# Two things here are not optional. `--base-href /rain/` because `ng build` is
+# perfectly happy to emit a page whose script tags resolve to the domain root
+# and 404 the moment it is served from a subpath -- a failure no build log
+# shows. And the copy to 404.html because nginx serves that file for any path
+# it cannot find under /rain/, which is how `/rain/r/1` reaches the router
+# instead of the site's own not-found page. Without it every shared link to a
+# single rain is dead, which is the only kind of link anyone shares.
+web-build-hosted = "cd web && bun run ng build --base-href /rain/ --output-path dist/hosted && cp dist/hosted/browser/index.html dist/hosted/browser/404.html"
 # Not optional before a CSS change is reviewed. Unit tests, agent review and an
 # axe-core pass at zero violations all missed a disabled button rendering at
 # 1.02:1 in the console this page was forked from, because none of them ask a
