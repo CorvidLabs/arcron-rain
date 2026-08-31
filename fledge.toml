@@ -35,10 +35,29 @@ deploy-testnet = "poetry run python -m scripts.rain_testnet_deploy --network tes
 rain-bot = "poetry run python -m scripts.rain_bot --network testnet"
 
 # --- TypeScript -----------------------------------------------------------
-# One package, so the install is scoped to it rather than run from the root.
-# There is no Bun workspace here to hold together.
-js-install = "cd js && bun install"
+# Two packages now, and they must share one algosdk: installed separately, both
+# copies end up in the browser bundle, which cost 487 kB and blew the initial
+# budget. So the install is the workspace's, from the root.
+js-install = "bun install"
 js-test = "cd js && bun test"
+
+# --- The page holders read ------------------------------------------------
+# Rain is the user-facing surface; Arcron's console is the developer one, and
+# nothing about upkeeps, selectors or escrow may appear here. `web-test` pins
+# that against the component templates and `web-render` against the rendered
+# page, which is the only one of the two that can catch it arriving from a
+# component the page composes rather than owns.
+web-test = "cd web && bun test"
+web-build = "cd web && bun run ng build"
+# Not optional before a CSS change is reviewed. Unit tests, agent review and an
+# axe-core pass at zero violations all missed a disabled button rendering at
+# 1.02:1 in the console this page was forked from, because none of them ask a
+# browser what colour anything ended up. This does, at four widths in both
+# themes, against a stubbed chain, and writes screenshots to
+# web/e2e/__screenshots__/. What is knowingly unfixed lives in
+# web/e2e/baseline.json with the reason; do not add to it to make a run pass.
+web-render = "cd web && bunx playwright test"
+web-render-install = "cd web && bunx playwright install chromium"
 
 # --- Against a real chain -------------------------------------------------
 # Require LocalNet running (algokit localnet start).
@@ -63,9 +82,9 @@ smoke-community-rain = "poetry run python -m scripts.community_rain_demo --netwo
 rain-one-draw = "poetry run python -m scripts.rain_one_draw --network testnet"
 
 [lanes.ci]
-description = "Contract build, unit tests, spec drift check and the TypeScript client. No chain."
-steps = ["build", "test", "spec", "js-install", "js-test"]
+description = "Contract build, unit tests, spec drift check, the TypeScript client and the page. No chain."
+steps = ["build", "test", "spec", "js-install", "js-test", "web-test", "web-build"]
 
 [lanes.local]
-description = "CI plus the two LocalNet end-to-end demos (needs algokit localnet start)"
-steps = ["build", "test", "spec", "js-install", "js-test", "smoke-rain", "smoke-community-rain"]
+description = "CI plus the rendered-page audit and the two LocalNet demos (needs algokit localnet start)"
+steps = ["build", "test", "spec", "js-install", "js-test", "web-test", "web-build", "web-render", "smoke-rain", "smoke-community-rain"]

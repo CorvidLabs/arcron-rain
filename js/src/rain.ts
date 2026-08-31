@@ -9,7 +9,7 @@
 
 import algosdk from 'algosdk';
 
-import { algos, tokens, type NetworkKey } from './vendor';
+import { algos, tokens, type NetworkKey, type Upkeep } from './vendor';
 
 export const RAIN_PREFIX = 0x72;
 export const TICKET_PREFIX = 0x74;
@@ -380,19 +380,86 @@ export function enterMbr(mode: bigint): number {
   return mode === ONE ? TICKET_MBR + INDEX_MBR : TICKET_MBR;
 }
 
-export function rainsRemaining(rain: Pick<RainRec, 'pot' | 'drip' | 'tickets' | 'mode' | 'waveCount'>): bigint {
+/**
+ * The pot the contract would actually spend from.
+ *
+ * `_fire_wave` folds the shares of the last wave that nobody claimed back into
+ * the pot *before* it decides whether it can pay, so for a WAVE rain the
+ * number in the box is smaller than the number the contract compares against.
+ * Reading the box figure alone reports "pot is empty" on the very drop the
+ * contract is about to make.
+ */
+export function payablePot(
+  rain: Pick<RainRec, 'mode' | 'pot' | 'lastShare' | 'waveUnclaimed'>,
+): bigint {
+  if (rain.mode !== WAVE) return rain.pot;
+  return rain.pot + rain.lastShare * rain.waveUnclaimed;
+}
+
+/** What one drop would take from the pot, and who it would be divided between. */
+export interface DropCost {
+  /** The people it is divided between: tickets, or the wave's check-ins. */
+  readonly count: bigint;
+  /** What each of them gets. Zero means the contract will not fire this rain. */
+  readonly share: bigint;
+  /** What leaves the pot: `share * count`, or the whole drip for ONE. */
+  readonly paid: bigint;
+  /** The pot it comes out of; see `payablePot`. */
+  readonly pot: bigint;
+}
+
+export type DropCostInput = Pick<
+  RainRec,
+  'mode' | 'tickets' | 'waveCount' | 'pot' | 'drip' | 'lastShare' | 'waveUnclaimed'
+>;
+
+/**
+ * One drop, priced the way the contract prices it.
+ *
+ * `_fire_split` and `_fire_wave` divide the drip by the number of people in
+ * and pay `share * count`, so integer division decides both whether a drop is
+ * payable at all and how much of the pot it takes. `_fire_one` spends the
+ * whole drip on a single ticket instead.
+ *
+ * Everything here that asks "can this rain fire" comes through this rather
+ * than approximating it as `pot >= drip`, which was wrong in both directions.
+ * A drip smaller than the head count gives a share of zero, and the contract
+ * returns *before* writing `last_rain_round`, so such a rain stays past its
+ * cadence for ever and the approximation called it due for ever — realistic
+ * for a 0-decimal ASA prize, where a drip of 1 token and three tickets is all
+ * it takes. In the other direction, a rain whose `share * count` had rounded
+ * below its drip could be paid and the approximation called it empty.
+ */
+export function dropCost(rain: DropCostInput): DropCost {
+  const pot = payablePot(rain);
+  if (rain.mode === ONE) {
+    return { count: rain.tickets, share: rain.drip, paid: rain.tickets > 0n ? rain.drip : 0n, pot };
+  }
+  const count = rain.mode === WAVE ? rain.waveCount : rain.tickets;
+  const share = count > 0n ? rain.drip / count : 0n;
+  return { count, share, paid: share * count, pot };
+}
+
+export function rainsRemaining(
+  rain: Pick<RainRec, 'pot' | 'drip' | 'tickets' | 'mode' | 'waveCount' | 'lastShare' | 'waveUnclaimed'>,
+): bigint {
   if (rain.drip <= 0n) return 0n;
+  // Same pot the readiness test spends from, so a rain can never read
+  // "Drops left 0" beside a standing that says one is coming.
+  const pot = payablePot(rain);
   if (rain.mode === WAVE) {
+    // A wave nobody has checked into yet is priced at one head, so an idle
+    // wave still reports how deep its pot is rather than reporting nothing.
     const count = rain.waveCount > 0n ? rain.waveCount : 1n;
     const share = rain.drip / count;
     if (share <= 0n) return 0n;
-    return rain.pot / (share * count);
+    return pot / (share * count);
   }
   if (rain.tickets <= 0n) return 0n;
-  if (rain.mode === ONE) return rain.pot / rain.drip;
+  if (rain.mode === ONE) return pot / rain.drip;
   const share = rain.drip / rain.tickets;
   if (share <= 0n) return 0n;
-  return rain.pot / (share * rain.tickets);
+  return pot / (share * rain.tickets);
 }
 
 export function roundsUntilRain(
@@ -450,36 +517,75 @@ export function prizeAssetId(rain: Pick<RainRec, 'prizeAsset'>): string | null {
   return rain.prizeAsset.toString();
 }
 
+export type StandingInput = DropCostInput & Pick<RainRec, 'prizeLocked'>;
+
 /**
- * Why a rain is `waiting` rather than due. Interval can already have passed
- * while the pot is empty or nobody has a ticket; calling that overdue is a lie.
+ * Why a rain is `waiting` rather than due, in the reader's own words.
+ *
+ * This is the readiness test, not a caption for one — `rainStanding` is
+ * derived from it, so a rain can never be told it is due and told why it is
+ * not in the same breath. Every branch mirrors a place where `_try_fire`
+ * returns *before* it writes `last_rain_round`: the interval keeps elapsing,
+ * so anything the contract silently declines reads as overdue for ever unless
+ * it is named here.
  */
-export function waitingReason(
-  rain: Pick<RainRec, 'mode' | 'tickets' | 'waveCount' | 'pot' | 'drip'>,
-): string | null {
+export function waitingReason(rain: StandingInput): string | null {
+  // `_fire_one` returns on a locked prize, so a ONE rain awaiting resolve or
+  // abandon is stuck until a person clears it. Nothing is coming for it, and
+  // its detail page offers the two buttons that free it.
+  if (rain.mode === ONE && rain.prizeLocked > 0n) return 'the last drop is still being resolved';
   if (rain.mode === WAVE && rain.waveCount === 0n) return 'nobody checked in';
   if (rain.mode !== WAVE && rain.tickets === 0n) return 'no tickets yet';
-  if (rain.pot < rain.drip) return 'pot is empty';
+  const cost = dropCost(rain);
+  // Integer division: a drop that cannot give everyone in at least one unit is
+  // a drop the contract declines to make, and tickets only ever grow, so this
+  // is permanent once crossed.
+  if (rain.mode !== ONE && cost.share === 0n) {
+    return 'each drop is too small to split between everyone in';
+  }
+  if (cost.pot < cost.paid) return 'pot is empty';
   return null;
 }
 
 export type RainStanding = 'due' | 'scheduled' | 'waiting';
 
 export function rainStanding(
-  rain: Pick<RainRec, 'mode' | 'tickets' | 'waveCount' | 'pot' | 'drip' | 'lastRainRound' | 'intervalRounds'>,
+  rain: StandingInput & Pick<RainRec, 'lastRainRound' | 'intervalRounds'>,
   round: bigint,
 ): RainStanding {
-  const ready =
-    rain.mode === WAVE
-      ? rain.waveCount > 0n && rain.pot >= rain.drip
-      : rain.tickets > 0n && rain.pot >= rain.drip;
-  if (!ready) return 'waiting';
+  if (waitingReason(rain) !== null) return 'waiting';
   if (roundsUntilRain(rain, round) <= 0n) return 'due';
   return 'scheduled';
 }
 
+/**
+ * Whether a keeper upkeep box is evidence that a drop is actually coming.
+ *
+ * Rain reads one box on a scheduler it does not own, and a box that decodes is
+ * not a schedule that runs. Two ways it can decode perfectly and still never
+ * fire this hub:
+ *
+ * - it points somewhere else. Anyone can register a schedule against any app,
+ *   so an id that is not this hub's is somebody else's business.
+ * - its escrow can no longer pay its own fee. The keeper asserts
+ *   `balance >= fee` on every execution, and it drops an escalated fee back to
+ *   the base fee when the balance cannot cover it, so the base fee is the true
+ *   floor. Below it the schedule is byte-identical to a healthy one — there is
+ *   no status flag in the struct — and every call reverts.
+ *
+ * Fail the read rather than the render: null flows to "waiting", and no word
+ * of why ever reaches a reader who is here for a pot and a ticket.
+ */
+export function scheduleServes(
+  upkeep: Pick<Upkeep, 'targetApp' | 'balance' | 'feePerExecution'>,
+  deployment: Pick<RainDeployment, 'appId'>,
+): boolean {
+  if (upkeep.targetApp !== BigInt(deployment.appId)) return false;
+  return upkeep.balance >= upkeep.feePerExecution;
+}
+
 export function modeHint(rain: Pick<RainRec, 'mode' | 'waveCap'>): string {
-  if (rain.mode === ONE) return 'One random ticket each fire';
+  if (rain.mode === ONE) return 'One random ticket each drop';
   if (rain.mode === WAVE) {
     const cap = rain.waveCap.toString();
     return `The first ${cap} to check in this drop`;

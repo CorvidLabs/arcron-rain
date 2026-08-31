@@ -1,0 +1,9 @@
+{
+  "name": "arcron-rain-workspace",
+  "private": true,
+  "description": "Bun workspace root. js/ is the Rain client; web/ is the page holders read. They must share one algosdk: installed separately, both copies end up in the browser bundle, which cost 487 kB and blew the initial budget.",
+  "workspaces": [
+    "js",
+    "web"
+  ]
+}

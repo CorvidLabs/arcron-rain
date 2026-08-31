@@ -146,6 +146,173 @@ export function tokens(baseUnits: bigint, decimals: number): string {
   return negative ? `−${value}` : value;
 }
 
+/**
+ * A typed whole-token amount as the ASA's base units: 1.5 of a 6-decimal
+ * asset is 1_500_000n. Rounds to the nearest base unit, the same way the
+ * ALGO forms round to the nearest µALGO.
+ */
+export function toBaseUnits(amount: number, decimals: number): bigint {
+  return BigInt(Math.round(amount * 10 ** decimals));
+}
+
+export function shortAddress(address: string): string {
+  return `${address.slice(0, 6)}…${address.slice(-4)}`;
+}
+
+export function rounds(count: bigint): string {
+  const magnitude = count < 0n ? -count : count;
+  return `${magnitude.toLocaleString('en-US')} round${magnitude === 1n ? '' : 's'}`;
+}
+
+const MINUTE = 60;
+const HOUR = 60 * MINUTE;
+const DAY = 24 * HOUR;
+
+/**
+ * A duration a person can hold in their head: seconds up to a minute, then
+ * minutes, hours, days. One unit of precision, plus a second when it earns
+ * its place ("1 d 6 h", not "1 d 6 h 13 min 2 s").
+ */
+export function duration(seconds: number): string {
+  const magnitude = Math.abs(Math.round(seconds));
+  if (magnitude < 1) return 'moments';
+  if (magnitude < MINUTE) return `${magnitude} s`;
+  if (magnitude < HOUR) return split(magnitude, MINUTE, 1, 'min', 's');
+  if (magnitude < DAY) return split(magnitude, HOUR, MINUTE, 'h', 'min');
+  return split(magnitude, DAY, HOUR, 'd', 'h');
+}
+
+/**
+ * One unit, plus a second when it earns its place ("1 d 6 h", never
+ * "1 d 6 h 13 min"). The remainder is rounded, then carried, so 23.9 hours
+ * reads as "1 d" rather than the misleading "23 h".
+ */
+function split(seconds: number, unit: number, subUnit: number, name: string, subName: string): string {
+  let whole = Math.floor(seconds / unit);
+  let rest = Math.round((seconds % unit) / subUnit);
+  if (rest >= unit / subUnit) {
+    whole += 1;
+    rest = 0;
+  }
+  const showRest = rest > 0 && whole < 10 && (subUnit > 1 || rest >= 5);
+  return showRest ? `${whole} ${name} ${rest} ${subName}` : `${whole} ${name}`;
+}
+
+/** Rounds as time, when we know how fast the chain is moving. */
+export function roundsAsTime(count: bigint, secondsPerRound: number | null): string | null {
+  if (secondsPerRound === null || secondsPerRound <= 0) return null;
+  const magnitude = count < 0n ? -count : count;
+  return duration(Number(magnitude) * secondsPerRound);
+}
+
+/**
+ * Keep a phrase together, so a value only ever wraps where it means something.
+ *
+ * These labels are "A · B" compounds, and as one plain string they wrap
+ * wherever the box runs out: a card on a phone rendered a cadence as
+ * "214 rounds · ~8" on one line and "min 55 s" on the next, splitting a
+ * duration between its number and its unit. Replacing the spaces *inside* each
+ * half with non-breaking ones leaves the separator as the only break
+ * opportunity, so a value that must wrap does it between the two facts rather
+ * than through one of them.
+ */
+function unbreakable(phrase: string): string {
+  return phrase.replace(/ /g, '\u00a0');
+}
+
+/** "every 10 rounds · ~28 s": the round count leads, time explains it. */
+export function intervalLabel(intervalRounds: bigint, secondsPerRound: number | null): string {
+  const time = roundsAsTime(intervalRounds, secondsPerRound);
+  const count = unbreakable(rounds(intervalRounds));
+  return time === null ? count : `${count} · ${unbreakable(`~${time}`)}`;
+}
+
+/** "due now", "overdue by ~2 min", "in ~1 d 6 h". */
+export function dueLabel(untilDue: bigint, secondsPerRound: number | null): string {
+  if (untilDue === 0n) return 'due now';
+  const time = roundsAsTime(untilDue, secondsPerRound);
+  const amount = unbreakable(time === null ? rounds(untilDue) : `~${time}`);
+  return untilDue < 0n ? `overdue by ${amount}` : `in ${amount}`;
+}
+
+// From `js/src/upkeep.ts` in CorvidLabs/arcron.
+//
+// Rain does not own an upkeep and never writes one. It reads exactly one box
+// on the keeper app — the upkeep that calls `draw()` — so that the page can
+// tell "this rain is due" apart from "this rain is due and something is
+// coming to fire it". `_fire_split` leaves `last_rain_round` untouched when a
+// rain cannot pay, so a dry rain reads as due for ever; the keeper's own
+// schedule is the only second opinion available.
+//
+// Only the read is copied. Registering, cancelling, funding and the fee
+// arithmetic are arcron's business and are deliberately absent: nothing in
+// Rain's surface may grow a reason to want them.
+
+/** Box names are `"u"` followed by the id as a big-endian uint64. */
+const UPKEEP_BOX_NAME_PREFIX = 'u';
+const UPKEEP_BOX_NAME_BYTES = 9;
+const UPKEEP_HEAD_BYTES = 130;
+
+export interface Upkeep {
+  readonly id: bigint;
+  readonly creator: string;
+  readonly targetApp: bigint;
+  readonly intervalRounds: bigint;
+  readonly nextExecutionRound: bigint;
+  readonly feePerExecution: bigint;
+  readonly balance: bigint;
+  readonly timesExecuted: bigint;
+  /** The round it last ran in, not the round it was scheduled for. */
+  readonly lastServicedRound: bigint;
+}
+
+export function upkeepBoxName(id: bigint | number): Uint8Array {
+  const name = new Uint8Array(UPKEEP_BOX_NAME_BYTES);
+  name[0] = UPKEEP_BOX_NAME_PREFIX.charCodeAt(0);
+  new DataView(name.buffer).setBigUint64(1, BigInt(id));
+  return name;
+}
+
+/**
+ * Read an upkeep box, refusing anything that is not this exact struct.
+ *
+ * The tail-offset check is the whole point of throwing rather than returning
+ * partial data. A box whose offset has been patched decodes as a plausible
+ * upkeep with no call args, so a foreign app's boxes read as ordinary and a
+ * reader invents a schedule that is not there. Rain shows the result as "next
+ * drop expected around round N"; inventing that number is worse than saying
+ * "waiting".
+ */
+export function decodeUpkeep(id: bigint, raw: Uint8Array): Upkeep {
+  if (raw.length < UPKEEP_HEAD_BYTES + 2) {
+    throw new Error(`Upkeep box ${id} is ${raw.length} bytes, too short to decode`);
+  }
+  const view = new DataView(raw.buffer, raw.byteOffset, raw.byteLength);
+  const tailOffset = view.getUint16(40);
+  if (tailOffset !== UPKEEP_HEAD_BYTES) {
+    throw new Error(
+      `Upkeep box ${id} has a tail offset of ${tailOffset}, not ${UPKEEP_HEAD_BYTES}. ` +
+        `This is not the keeper's Upkeep struct.`,
+    );
+  }
+  return {
+    id,
+    creator: algosdk.encodeAddress(raw.subarray(0, 32)),
+    targetApp: view.getBigUint64(32),
+    intervalRounds: view.getBigUint64(42),
+    nextExecutionRound: view.getBigUint64(50),
+    feePerExecution: view.getBigUint64(58),
+    balance: view.getBigUint64(66),
+    timesExecuted: view.getBigUint64(74),
+    lastServicedRound: view.getBigUint64(98),
+  };
+}
+
+/** Rounds until the keeper's next scheduled run; negative once overdue. */
+export function roundsUntilDue(upkeep: Upkeep, currentRound: bigint): bigint {
+  return upkeep.nextExecutionRound - currentRound;
+}
+
 // From `js/src/networks.ts` in CorvidLabs/arcron. Only the key: which chain a
 // deployment is on. Rain has no need for arcron's node configs, and its own
 // console will bring its own.

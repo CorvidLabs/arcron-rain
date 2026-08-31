@@ -1,0 +1,186 @@
+{
+  "note": "Rendering problems that exist today and are being left alone on purpose. Each entry pins the measurement, so the same problem getting worse fails the run, a new one fails the run, and one that has been fixed fails the run too (a licence nothing uses any more is a licence to regress). Regenerate with scripts/write-baseline.ts only after reading what changed.",
+  "rules": {
+    "text-size": "This page renders its whole type scale below 14px, from 10.56px chips up to 13.6px body copy, on a 15px root. That is not one style to nudge; it is the scale, and moving it changes how every page reads. The measurements are here so the decision can be made with numbers, and so nothing gets smaller in the meantime. The list shrank by twenty-odd entries when the keeper console's pages were removed from this site — those were licences for styles that no longer exist, not fixes.",
+    "touch-target": "Every control is sized for a mouse: buttons land at 29.8px or 38.2px tall at 390 wide, against the 44x44 WCAG 2.5.5 target. Fixing it means a deliberate pass over control sizing on touch, not a min-height sprinkled over the button rules, so it is recorded rather than patched.",
+    "table-cell": "A td whose display is not table-cell is wrapped in an anonymous cell, and the row's background and bottom border stop at the last real cell. The measurable symptom is a cell shorter than its row. That premise holds for a table and stops holding for the rain list, which deliberately stops being one: under 1219px every row is a card, the tr carries its own border, radius, background and state stripe, and each td is a label/value line inside it. So a td is shorter than its tr by design, and the thing this rule protects, a row whose paint stops short, is drawn by the tr itself."
+  },
+  "accepted": {
+    "table-cell:td@390": {
+      "worst": 516.72,
+      "why": "the mobile registry cards. Each td is a 516.72px-shorter line inside a card-shaped tr, which is the layout rather than a fault: the nine-column table was a sideways scroller on a phone with the Execute button off the right edge. Verified by measurement that no cell escapes its card and the document does not scroll sideways. See rules.table-cell."
+    },
+    "table-cell:td@768": {
+      "worst": 404.52,
+      "why": "the registry cards at 768px: td is a label/value line inside a card-shaped tr, 404.52px shorter by design. Cards now run to 1219px rather than 480px, because the table needs 1074px and the content box only reaches that at a 1240px viewport. See rules.table-cell."
+    },
+    "table-cell:th@390": {
+      "worst": 284.23,
+      "why": "the rain cards at 390px: th is the rain's name and thumbnail as the first line inside a card-shaped tr, 284.23px shorter than it by design. The tr carries its own border, radius, background and state stripe, so the paint this rule protects is drawn by the row. Same case as the registry cards. See rules.table-cell."
+    },
+    "table-cell:th@768": {
+      "worst": 252.97,
+      "why": "the rain cards at 768px: th is a label/value line inside a card-shaped tr, 252.97px shorter by design. Cards run to 1219px, matching the registry. See rules.table-cell."
+    },
+    "text-size:a": {
+      "worst": 11.52,
+      "why": "a renders at 11.52px, below the 14px floor. See rules.text-size."
+    },
+    "text-size:button.current.ghost.small": {
+      "worst": 12.8,
+      "why": "button.current.ghost.small renders at 12.8px, below the 14px floor. See rules.text-size."
+    },
+    "text-size:button.ghost.small": {
+      "worst": 12.8,
+      "why": "button.ghost.small renders at 12.8px, below the 14px floor. See rules.text-size."
+    },
+    "text-size:button.ghost.small.wallet": {
+      "worst": 12.8,
+      "why": "button.ghost.small.wallet renders at 12.8px, below the 14px floor. See rules.text-size."
+    },
+    "text-size:dd.hint": {
+      "worst": 11.84,
+      "why": "dd.hint renders at 11.84px, below the 14px floor. See rules.text-size."
+    },
+    "text-size:dt.eyebrow": {
+      "worst": 11.2,
+      "why": "dt.eyebrow renders at 11.2px, below the 14px floor. See rules.text-size."
+    },
+    "text-size:legend.eyebrow": {
+      "worst": 11.2,
+      "why": "legend.eyebrow renders at 11.2px, below the 14px floor. See rules.text-size."
+    },
+    "text-size:p": {
+      "worst": 12.8,
+      "why": "p renders at 12.8px, below the 14px floor. See rules.text-size."
+    },
+    "text-size:p.detail": {
+      "worst": 13.12,
+      "why": "p.detail renders at 13.12px, below the 14px floor. See rules.text-size."
+    },
+    "text-size:p.due.standing": {
+      "worst": 11.52,
+      "why": "p.due.standing renders at 11.52px, below the 14px floor. See rules.text-size."
+    },
+    "text-size:p.empty": {
+      "worst": 13.6,
+      "why": "p.empty renders at 13.6px, below the 14px floor. See rules.text-size."
+    },
+    "text-size:p.eyebrow": {
+      "worst": 11.2,
+      "why": "p.eyebrow renders at 11.2px, below the 14px floor. See rules.text-size."
+    },
+    "text-size:p.hint": {
+      "worst": 12.8,
+      "why": "p.hint renders at 12.8px, below the 14px floor. See rules.text-size."
+    },
+    "text-size:p.legend": {
+      "worst": 12.16,
+      "why": "p.legend renders at 12.16px, below the 14px floor. See rules.text-size."
+    },
+    "text-size:p.note": {
+      "worst": 11.52,
+      "why": "p.note renders at 11.52px, below the 14px floor. See rules.text-size."
+    },
+    "text-size:p.prompt": {
+      "worst": 13.12,
+      "why": "p.prompt renders at 13.12px, below the 14px floor. See rules.text-size."
+    },
+    "text-size:p.standing.waiting": {
+      "worst": 11.52,
+      "why": "p.standing.waiting renders at 11.52px, below the 14px floor. The same declaration as p.due.standing, already recorded; it is the third state of one element, not a new decision. It only appears now because the matrix audits a waiting rain, which it never did before. See rules.text-size."
+    },
+    "text-size:p.subtitle": {
+      "worst": 13.6,
+      "why": "p.subtitle renders at 13.6px, below the 14px floor. See rules.text-size."
+    },
+    "text-size:small": {
+      "worst": 11.52,
+      "why": "small renders at 11.52px, below the 14px floor. See rules.text-size."
+    },
+    "text-size:span": {
+      "worst": 12.8,
+      "why": "span renders at 12.8px, below the 14px floor. See rules.text-size."
+    },
+    "text-size:span.away": {
+      "worst": 10.61,
+      "why": "the decorative arrow on an outbound link. It is aria-hidden and carries no information, so its size is the least urgent thing on this list."
+    },
+    "text-size:span.chip.due": {
+      "worst": 10.56,
+      "why": "span.chip.due renders at 10.56px, below the 14px floor. See rules.text-size."
+    },
+    "text-size:span.chip.scheduled": {
+      "worst": 10.56,
+      "why": "span.chip.scheduled renders at 10.56px, below the 14px floor. See rules.text-size."
+    },
+    "text-size:span.chip.waiting": {
+      "worst": 10.56,
+      "why": "span.chip.waiting renders at 10.56px, below the 14px floor. The same size as span.chip.due and span.chip.scheduled, already recorded; it is the third state of that one chip, not a new decision. See rules.text-size."
+    },
+    "text-size:span.connect.you": {
+      "worst": 12.16,
+      "why": "span.connect.you renders at 12.16px, below the 14px floor. See rules.text-size."
+    },
+    "text-size:span.dot": {
+      "worst": 12.16,
+      "why": "span.dot renders at 12.16px, below the 14px floor. It is the separator between a rain's id and its ticket count. Its colour was var(--hairline), a border token, drawing 1.28:1; that is fixed and it now uses var(--text-faint). The size is the type scale. See rules.text-size."
+    },
+    "text-size:span.eyebrow": {
+      "worst": 11.2,
+      "why": "span.eyebrow renders at 11.2px, below the 14px floor. See rules.text-size."
+    },
+    "text-size:span.gate": {
+      "worst": 12.16,
+      "why": "span.gate renders at 12.16px, below the 14px floor. See rules.text-size."
+    },
+    "text-size:span.mono": {
+      "worst": 12.48,
+      "why": "span.mono renders at 12.48px, below the 14px floor. See rules.text-size."
+    },
+    "text-size:span.mono.sub": {
+      "worst": 12.16,
+      "why": "span.mono.sub renders at 12.16px, below the 14px floor. See rules.text-size."
+    },
+    "text-size:span.now.sub": {
+      "worst": 12.16,
+      "why": "span.now.sub renders at 12.16px, below the 14px floor. See rules.text-size."
+    },
+    "text-size:span.pace.part": {
+      "worst": 12.48,
+      "why": "span.pace.part renders at 12.48px. These are not new small text: the status line was always this size, and splitting it into named spans so a phone can hide the round rate is what made it selectable. See rules.text-size."
+    },
+    "text-size:span.part": {
+      "worst": 12.48,
+      "why": "span.part renders at 12.96px. These are not new small text: the status line was always this size, and splitting it into named spans so a phone can hide the round rate is what made it selectable. See rules.text-size."
+    },
+    "text-size:span.prize.sub": {
+      "worst": 12.16,
+      "why": "span.prize.sub renders at 12.16px, below the 14px floor. The same size as span.sub, already recorded. See rules.text-size."
+    },
+    "text-size:span.sub": {
+      "worst": 12.16,
+      "why": "span.sub renders at 12.16px, below the 14px floor. See rules.text-size."
+    },
+    "text-size:span.tagline": {
+      "worst": 12.48,
+      "why": "span.tagline renders at 12.48px, below the 14px floor. See rules.text-size."
+    },
+    "text-size:strong": {
+      "worst": 13.6,
+      "why": "strong renders at 13.6px, below the 14px floor. See rules.text-size."
+    },
+    "text-size:th": {
+      "worst": 10.88,
+      "why": "th renders at 10.88px, below the 14px floor. It left this list briefly while the head was .sr-only, which turned out to be hiding it from the audit rather than from the page. See rules.text-size."
+    },
+    "touch-target:a@390": {
+      "worst": 8.45,
+      "why": "an 8.45x16px anchor, still the worst target here. Three fixes were tried in registry-table.ts on 2026-08-27 — min-height with display:flex, th a[href] as well as td a[href], and content-box padding — and the measurement did not move, though the media query is present in the built bundle. So the element being measured is probably not the registry id link this entry originally described. Needs identifying in a browser before a fourth guess."
+    },
+    "touch-target:input@390": {
+      "worst": 13,
+      "why": "the native radio and checkbox in the register form. Sized to 24x24 with 10px of margin on 2026-08-27, which the audit still measures as the 13x13 the user agent draws, so the rule is not reaching them either. Grouped with a@390: both need identifying in a browser rather than another guess."
+    }
+  }
+}

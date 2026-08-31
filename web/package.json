@@ -1,0 +1,47 @@
+{
+  "name": "web",
+  "version": "0.0.0",
+  "scripts": {
+    "ng": "ng",
+    "start": "ng serve",
+    "build": "ng build",
+    "watch": "ng build --watch --configuration development",
+    "test": "ng test"
+  },
+  "private": true,
+  "packageManager": "bun@1.3.14",
+  "dependencies": {
+    "@angular/common": "^22.1.0",
+    "@angular/compiler": "^22.1.0",
+    "@angular/core": "^22.1.0",
+    "@angular/forms": "^22.1.0",
+    "@angular/platform-browser": "^22.1.0",
+    "@angular/router": "^22.1.0",
+    "@txnlab/use-wallet": "^5.0.0",
+    "@txnlab/use-wallet-defly": "^5.0.0",
+    "@txnlab/use-wallet-exodus": "^5.0.0",
+    "@txnlab/use-wallet-kibisis": "^5.0.0",
+    "@txnlab/use-wallet-kmd": "^5.0.0",
+    "@txnlab/use-wallet-lute": "^5.0.0",
+    "@txnlab/use-wallet-pera": "^5.0.0",
+    "@txnlab/use-wallet-walletconnect": "^5.0.0",
+    "algosdk": "^3.7.0",
+    "buffer": "^6.0.3",
+    "rxjs": "~7.8.0",
+    "tslib": "^2.3.0",
+    "@corvidlabs/arcron-rain": "workspace:*"
+  },
+  "devDependencies": {
+    "@angular/build": "^22.1.5",
+    "@angular/cli": "^22.1.5",
+    "@angular/compiler-cli": "^22.1.0",
+    "@perawallet/connect": "1.6.0",
+    "@playwright/test": "^1.62.1",
+    "@types/bun": "^1.4.0",
+    "axe-core": "^4.13.0",
+    "jsdom": "^28.0.0",
+    "prettier": "^3.8.1",
+    "typescript": "~6.0.2",
+    "vitest": "^4.0.8"
+  }
+}

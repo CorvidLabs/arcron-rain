@@ -12,7 +12,8 @@
   "exports": {
     "./rain": "./src/rain.ts",
     "./rain-abi": "./src/rain-abi.ts",
-    "./rain-txns": "./src/rain-txns.ts"
+    "./rain-txns": "./src/rain-txns.ts",
+    "./vendor": "./src/vendor.ts"
   },
   "files": [
     "src"

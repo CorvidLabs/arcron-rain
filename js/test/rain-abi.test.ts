@@ -18,15 +18,19 @@ import {
   decodeHubState,
   decodeLabel,
   decodeRainRec,
+  dropCost,
   encodeLabel,
   encodeRainRec,
+  payablePot,
   prizeAssetId,
   prizeLabel,
   qualifies,
   rainBoxName,
   rainIdFromBoxName,
+  rainStanding,
   rainsRemaining,
   sameBoxName,
+  scheduleServes,
   ticketBoxName,
   ticketRainIdForHolder,
   waitingReason,
@@ -140,22 +144,69 @@ describe('RainRec encoding', () => {
 });
 
 describe('rainsRemaining', () => {
+  const base = { waveCount: 0n, lastShare: 0n, waveUnclaimed: 0n };
+
   test('SPLIT is pot divided by the paid slice', () => {
     expect(
-      rainsRemaining({ pot: 1_000_000n, drip: 100_000n, tickets: 2n, mode: SPLIT, waveCount: 0n }),
+      rainsRemaining({ ...base, pot: 1_000_000n, drip: 100_000n, tickets: 2n, mode: SPLIT }),
     ).toBe(10n);
   });
 
   test('is zero when a share cannot be paid', () => {
-    expect(
-      rainsRemaining({ pot: 50n, drip: 100n, tickets: 3n, mode: SPLIT, waveCount: 0n }),
-    ).toBe(0n);
+    expect(rainsRemaining({ ...base, pot: 50n, drip: 100n, tickets: 3n, mode: SPLIT })).toBe(0n);
   });
 
   test('ONE is pot divided by drip', () => {
     expect(
-      rainsRemaining({ pot: 500_000n, drip: 100_000n, tickets: 9n, mode: ONE, waveCount: 0n }),
+      rainsRemaining({ ...base, pot: 500_000n, drip: 100_000n, tickets: 9n, mode: ONE }),
     ).toBe(5n);
+  });
+
+  test('a wave counts the shares nobody claimed, which the contract puts back', () => {
+    // `_fire_wave` folds `last_share * wave_unclaimed` into the pot before it
+    // spends, so a wave whose box pot is empty is not out of drops.
+    expect(
+      rainsRemaining({
+        pot: 0n,
+        drip: 100n,
+        tickets: 5n,
+        mode: WAVE,
+        waveCount: 5n,
+        lastShare: 20n,
+        waveUnclaimed: 5n,
+      }),
+    ).toBe(1n);
+  });
+});
+
+describe('payablePot', () => {
+  test('only a wave reclaims; every other mode spends what the box says', () => {
+    const wave = { mode: WAVE, pot: 100n, lastShare: 20n, waveUnclaimed: 3n };
+    expect(payablePot(wave)).toBe(160n);
+    expect(payablePot({ ...wave, mode: SPLIT })).toBe(100n);
+    expect(payablePot({ ...wave, mode: ONE })).toBe(100n);
+  });
+});
+
+describe('dropCost', () => {
+  const base = { pot: 1_000n, drip: 90n, tickets: 4n, waveCount: 0n, lastShare: 0n, waveUnclaimed: 0n };
+
+  test('SPLIT rounds the share down and pays only what it rounded to', () => {
+    // 90 // 4 = 22, so 88 leaves the pot and 2 stays: the contract's
+    // arithmetic, not the drip.
+    expect(dropCost({ ...base, mode: SPLIT })).toEqual({ count: 4n, share: 22n, paid: 88n, pot: 1_000n });
+  });
+
+  test('ONE spends the whole drip on one ticket, and nothing with no tickets', () => {
+    expect(dropCost({ ...base, mode: ONE })).toMatchObject({ share: 90n, paid: 90n });
+    expect(dropCost({ ...base, mode: ONE, tickets: 0n })).toMatchObject({ paid: 0n });
+  });
+
+  test('a share of zero is a drop the contract will not make', () => {
+    expect(dropCost({ ...base, mode: SPLIT, drip: 3n, tickets: 5n })).toMatchObject({
+      share: 0n,
+      paid: 0n,
+    });
   });
 });
 
@@ -273,8 +324,26 @@ describe('prizeAssetId', () => {
   });
 });
 
+/**
+ * Every branch here is a place `_try_fire` returns without writing
+ * `last_rain_round`.
+ *
+ * That is the whole reason this function has to be exhaustive. The cadence
+ * keeps elapsing whatever the contract decides, so a condition the contract
+ * silently declines on and this function does not name reads as overdue on
+ * every visit, for ever — and the page promises a drop that cannot happen.
+ */
 describe('waitingReason', () => {
-  const base = { mode: SPLIT, tickets: 1n, waveCount: 0n, pot: 1_000_000n, drip: 50_000n };
+  const base = {
+    mode: SPLIT,
+    tickets: 1n,
+    waveCount: 0n,
+    pot: 1_000_000n,
+    drip: 50_000n,
+    lastShare: 0n,
+    waveUnclaimed: 0n,
+    prizeLocked: 0n,
+  };
 
   test('an empty pot is why, not the interval', () => {
     expect(waitingReason({ ...base, pot: 0n })).toBe('pot is empty');
@@ -290,6 +359,105 @@ describe('waitingReason', () => {
 
   test('a funded rain with tickets is not waiting for a reason', () => {
     expect(waitingReason(base)).toBeNull();
+  });
+
+  test('a ONE rain with a locked prize is waiting on a person', () => {
+    // `_fire_one` returns on `prize_locked > 0` before it touches
+    // `last_rain_round`, so nothing frees this but `resolve` or `abandon`.
+    expect(waitingReason({ ...base, mode: ONE, prizeLocked: 50_000n })).toBe(
+      'the last drop is still being resolved',
+    );
+    expect(waitingReason({ ...base, mode: ONE })).toBeNull();
+  });
+
+  test('a lock on a SPLIT or WAVE rain is not a reason, because it cannot happen', () => {
+    // Only `_fire_one` locks a prize, and only `_fire_one` checks it.
+    expect(waitingReason({ ...base, prizeLocked: 50_000n })).toBeNull();
+  });
+
+  test('a drop too small to divide is why, not an empty pot', () => {
+    // 3 // 5 = 0. Realistic for a 0-decimal ASA prize, and tickets only grow.
+    const tiny = { ...base, drip: 3n, tickets: 5n, pot: 1_000n };
+    expect(waitingReason(tiny)).toBe('each drop is too small to split between everyone in');
+    expect(waitingReason({ ...tiny, mode: WAVE, waveCount: 5n })).toBe(
+      'each drop is too small to split between everyone in',
+    );
+  });
+
+  test('a pot below the drip but at or above the rounded share is not empty', () => {
+    // 90 // 4 = 22, so 88 is the real price of a drop. The old `pot >= drip`
+    // called a rain the contract can pay "pot is empty".
+    expect(waitingReason({ ...base, drip: 90n, tickets: 4n, pot: 88n })).toBeNull();
+    expect(waitingReason({ ...base, drip: 90n, tickets: 4n, pot: 87n })).toBe('pot is empty');
+  });
+
+  test('a wave counts the reclaim before calling its pot empty', () => {
+    expect(
+      waitingReason({ ...base, mode: WAVE, waveCount: 5n, drip: 100n, pot: 0n, lastShare: 20n, waveUnclaimed: 5n }),
+    ).toBeNull();
+  });
+});
+
+describe('rainStanding', () => {
+  const overdue = {
+    mode: SPLIT,
+    tickets: 5n,
+    waveCount: 0n,
+    pot: 1_000n,
+    drip: 100n,
+    lastShare: 0n,
+    waveUnclaimed: 0n,
+    prizeLocked: 0n,
+    lastRainRound: 100n,
+    intervalRounds: 10n,
+  };
+
+  test('past its cadence and payable is due', () => {
+    expect(rainStanding(overdue, 1_000n)).toBe('due');
+  });
+
+  test('within its cadence is scheduled', () => {
+    expect(rainStanding(overdue, 105n)).toBe('scheduled');
+  });
+
+  test('never says due for anything waitingReason can name', () => {
+    // The standing is derived from the reason, so the two cannot disagree —
+    // the page cannot print "Due" above a sentence saying why it is not.
+    for (const rain of [
+      { ...overdue, mode: ONE, prizeLocked: 100n },
+      { ...overdue, drip: 3n },
+      { ...overdue, mode: WAVE, waveCount: 5n, drip: 3n },
+      { ...overdue, tickets: 0n },
+      { ...overdue, pot: 0n },
+    ]) {
+      expect(waitingReason(rain)).not.toBeNull();
+      expect(rainStanding(rain, 1_000n)).toBe('waiting');
+    }
+  });
+});
+
+/**
+ * A box that decodes is not a schedule that runs, and Rain has no vocabulary
+ * for the difference — so the read fails closed and the page says "waiting".
+ */
+describe('scheduleServes', () => {
+  const hub = { appId: 770_746_178 };
+  const healthy = { targetApp: 770_746_178n, balance: 604_000n, feePerExecution: 10_000n };
+
+  test('a funded schedule aimed at this hub serves it', () => {
+    expect(scheduleServes(healthy, hub)).toBe(true);
+  });
+
+  test('exactly its own fee still serves; one microALGO under does not', () => {
+    // The keeper asserts `balance >= fee`, and drops an escalated fee back to
+    // the base fee when the balance cannot cover it, so the base fee is the
+    // floor and the boundary is `>=`, not `>`.
+    expect(scheduleServes({ ...healthy, balance: 10_000n }, hub)).toBe(true);
+    expect(scheduleServes({ ...healthy, balance: 9_999n }, hub)).toBe(false);
+  });
+
+  test('a schedule pointed at another app is not this hub schedule', () => {
+    expect(scheduleServes({ ...healthy, targetApp: 769_891_902n }, hub)).toBe(false);
   });
 });
 

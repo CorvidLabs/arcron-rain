@@ -1,0 +1,42 @@
+<a class="skip" href="#main">Skip to content</a>
+
+<header class="chrome">
+  <rain-network-bar />
+</header>
+<hr class="iridescent-rule" />
+
+<main id="main">
+  @if (nodeError(); as message) {
+    <p class="banner" role="alert">{{ message }}</p>
+  }
+
+  <rain-signer-bar />
+  <rain-stat-tiles />
+
+  <!-- Focused after every navigation but the first, so the caret follows the
+       URL. `tabindex="-1"` makes it a focus target without adding a tab stop. -->
+  <div class="routed" #routed tabindex="-1">
+    <router-outlet />
+  </div>
+
+  <rain-activity-log />
+</main>
+
+<footer class="chrome">
+  <p>
+    Rain. Anyone can open a pot; anyone holding a ticket collects from it.
+    <!-- The hub id is a constant in the client, so no link can move this page
+         to a look-alike contract. Looking that id up somewhere we do not
+         control is still the one check a reader can make that this page cannot
+         fake, so it is a link and not text. -->
+    @if (hubAppId(); as appId) {
+      <span>Hub <rain-explorer-link kind="app" [value]="appId.toString()" /></span>
+    }
+  </p>
+  <p>
+    Every pot, ticket and countdown here is public box state.
+    @if (chain.network() === 'localnet') {
+      <span>Signing on LocalNet goes through KMD.</span>
+    }
+  </p>
+</footer>
