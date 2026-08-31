@@ -1,0 +1,71 @@
+# fledge.toml — project task definitions
+# Docs: https://github.com/CorvidLabs/fledge#task-runner
+# Project: arcron-rain — the Rain hub (Algorand Python / Puya + AlgoKit)
+
+[tasks]
+build = "poetry run python -m smart_contracts build"
+test = "poetry run pytest tests/ -q"
+spec = "specsync check --strict"
+# Print the hash of the contract this tree builds; add --app-id to check a
+# deployment. This is not housekeeping. A hub is deployed immutable, so
+# "the code you can read is the code that is running" is its whole trust
+# story, and this is the only thing that can say so from the outside.
+verify = "poetry run python -m scripts.verify_build --no-rebuild"
+
+# --- Deploying ------------------------------------------------------------
+# LocalNet needs no secrets: accounts come from KMD and the dispenser funds
+# them. TestNet needs .env.testnet with DEPLOYER_MNEMONIC.
+#
+# The LocalNet path is AlgoKit's own, which reads a plain `.env` rather than
+# `.env.<network>` — so it will happily deploy wherever that file points. It
+# says `rain` explicitly so it cannot also create a beacon stub nobody asked
+# for.
+deploy-localnet = "poetry run python -m smart_contracts deploy rain"
+# TestNet is a different job, not the same one with a flag: it creates the
+# hub, bootstraps it, opens the Corvid rains, and registers the Arcron upkeep
+# that fires `draw()`. A hub with no upkeep pointed at it never rains.
+deploy-testnet = "poetry run python -m scripts.rain_testnet_deploy --network testnet"
+
+# --- The other half of a draw ---------------------------------------------
+# Arcron only ever calls `draw`, which locks a prize and names a future round.
+# Somebody still has to supply the beacon (`resolve`), free a draw whose seed
+# window closed (`abandon`), and pull what they are owed (`claim`). This bot
+# is that somebody for the rains we run. Every action is a no-op check before
+# it is a transaction, so a quiet round costs nothing.
+rain-bot = "poetry run python -m scripts.rain_bot --network testnet"
+
+# --- TypeScript -----------------------------------------------------------
+# One package, so the install is scoped to it rather than run from the root.
+# There is no Bun workspace here to hold together.
+js-install = "cd js && bun install"
+js-test = "cd js && bun test"
+
+# --- Against a real chain -------------------------------------------------
+# Require LocalNet running (algokit localnet start).
+#
+# The mocks record inner transactions rather than executing them and do not
+# enforce minimum balances, so every claim about money actually moving is a
+# claim only these can make.
+smoke-rain = "poetry run python -m scripts.rain_demo --network localnet"
+# The same hub with the two things a project actually wants: a gate on an NFT
+# collection, and a prize that is somebody's own token rather than ALGO. Both
+# are separate code paths (`opt_in_prize_asset`, `deposit_asset`, the gate
+# check on the minter) and neither is exercised by `smoke-rain`.
+smoke-community-rain = "poetry run python -m scripts.community_rain_demo --network localnet"
+
+# Deliberately not in a lane: it spends real TestNet ALGO and waits on real
+# rounds. A ONE draw on a live hub had never picked between two tickets — the
+# mocked test plants a seed, and the live proof entered with one account,
+# where `seed % 1` is zero for every seed there has ever been. This enters
+# from several accounts and checks each resolve against the block seed read
+# independently, so the contract has to agree with the chain and not merely
+# with itself.
+rain-one-draw = "poetry run python -m scripts.rain_one_draw --network testnet"
+
+[lanes.ci]
+description = "Contract build, unit tests, spec drift check and the TypeScript client. No chain."
+steps = ["build", "test", "spec", "js-install", "js-test"]
+
+[lanes.local]
+description = "CI plus the two LocalNet end-to-end demos (needs algokit localnet start)"
+steps = ["build", "test", "spec", "js-install", "js-test", "smoke-rain", "smoke-community-rain"]

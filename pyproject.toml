@@ -1,0 +1,42 @@
+[tool.poetry]
+name = "arcron-rain"
+version = "0.1.0"
+description = "Rain — a hub of scheduled prize drops on Algorand, fired by Arcron"
+authors = ["0xLeif <leif.algo@pm.me>"]
+readme = "README.md"
+# Nothing here is importable as a package. The contract is compiled by puya and
+# the scripts are run with `python -m scripts.<name>` from the repository root,
+# so asking poetry to build a distribution would only give it something to fail
+# on.
+package-mode = false
+
+[tool.poetry.dependencies]
+# Upper bound is load-bearing: coincurve publishes no wheels for 3.14, so
+# poetry must refuse it rather than trying to build from source.
+python = ">=3.12,<3.14"
+algokit-utils = "^4.0.0"
+python-dotenv = "^1.0.0"
+algorand-python = "^3"
+# Declared even though algokit-utils already pulls it in. The scripts
+# `import algosdk` directly — block seeds, transaction building, mnemonics —
+# and a transitive dependency is somebody else's promise, which they are free
+# to withdraw in a minor release.
+py-algorand-sdk = "^2.12"
+
+[tool.poetry.group.dev.dependencies]
+puyapy = ">=5.0,<5.10"
+pytest = "^9.1.1"
+# The `build` task shells out to `algokit generate client`, and the generated
+# `rain_client.py` is what every script and test imports. Pinned here so the
+# client this tree regenerates does not depend on which AlgoKit happens to be
+# on the machine.
+algokit-client-generator = "^2.1.0"
+# Only tests/ import it, and it is what pulls in python-ecdsa, whose Minerva
+# P-256 timing advisory has no patched version. Algorand signs with Ed25519 and
+# nothing here touches P-256, but a testing library has no business in the
+# dependency set somebody running the rain bot installs.
+algorand-python-testing = "^1"
+
+[build-system]
+requires = ["poetry-core"]
+build-backend = "poetry.core.masonry.api"

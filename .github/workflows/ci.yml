@@ -1,0 +1,125 @@
+# CI, entirely on GitHub-hosted runners.
+#
+# Every step shells out to a task in fledge.toml rather than restating the
+# command, and the task list is read from the `ci` lane itself rather than
+# repeated here. A repeated list is a list that drifts: in the repository this
+# one was split out of, a hand-copied loop quietly stopped running the
+# TypeScript tests and the copy still looked plausible.
+#
+# There is deliberately no self-hosted runner. A self-hosted runner executes
+# whatever a workflow says on hardware somebody owns, so on a public repository
+# "open a pull request" starts to mean "run this on someone's Mac". Guarding
+# that with an `if` works until the guard is edited. Not having the runner
+# cannot be edited wrong.
+name: CI
+
+# Least privilege, declared rather than inherited.
+#
+# Without this a workflow takes whatever the repository's default token
+# permissions happen to be. That default is a setting, and a setting can be
+# widened later by somebody who is not thinking about this file, at which point
+# every workflow silently widens with it. Nothing here writes: it checks out,
+# builds and runs tests. So the floor is the floor, and a job that ever needs
+# more has to say so here and be noticed.
+permissions:
+  contents: read
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+defaults:
+  run:
+    shell: bash
+
+jobs:
+  # One job, and it runs for everybody: this repository's branches and any
+  # fork's pull request, on identical hardware with no secrets. There is no
+  # second job to fall behind this one.
+  #
+  # `fledge` is not installed on a hosted runner, so this reads the task
+  # commands out of fledge.toml instead of restating them.
+  build-and-test:
+    name: Contract, tests and client
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+
+      - uses: oven-sh/setup-bun@v2
+
+      - name: Install dependencies
+        run: |
+          pip install "poetry>=2.0,<3.0"
+          poetry install --no-interaction
+          # The `build` task shells out to algokit to compile the contract and
+          # generate the typed client, and no hosted runner has it. Pinned, so
+          # CI does not follow algokit's next major on its own.
+          pip install "algokit>=2.0,<3.0"
+          algokit --version
+
+      # The `spec` task below is `specsync check --strict`, and SpecSync is a
+      # Rust binary that no hosted runner has and no dependency file installs.
+      # Without this step the loop dies on `specsync: command not found`.
+      #
+      # `version` has to be given explicitly: the action defaults to `6.0.0`
+      # and no such release exists yet — the 6.0 line is still candidates. It
+      # is the same candidate the arcron repository gates on, deliberately:
+      # these two trees were one tree, they share `.specsync/config.toml`, and
+      # two repositories that disagree about what drift means will eventually
+      # disagree about the same spec.
+      #
+      # The action puts SpecSync on PATH and runs `check --force --strict`
+      # itself. `--force` is the right CI invocation: the hash cache is not
+      # committed, and a warm workspace can otherwise report "all specs
+      # unchanged" and exit 0 over a check that validated nothing. The `spec`
+      # task still runs in the loop below, so this job's idea of the gate
+      # still comes from fledge.toml.
+      - name: SpecSync
+        uses: CorvidLabs/spec-sync@v6.0.0-rc.7
+        with:
+          version: 6.0.0-rc.7
+          strict: "true"
+
+      - name: Run the CI lane's tasks
+        run: |
+          # Read each command from fledge.toml so this job and `fledge lanes
+          # run ci` cannot disagree about what CI means.
+          run_task() {
+            local command
+            command=$(python -c "import tomllib,sys; print(tomllib.load(open('fledge.toml','rb'))['tasks'][sys.argv[1]])" "$1")
+            echo "::group::$1 — $command"
+            # A subshell, because the js tasks are `cd js && ...` and `eval`
+            # runs them in this shell: the directory change would survive the
+            # task, and the next iteration would look for fledge.toml from
+            # inside js/.
+            ( eval "$command" )
+            echo "::endgroup::"
+          }
+          steps=$(python -c "import tomllib; print(' '.join(tomllib.load(open('fledge.toml','rb'))['lanes']['ci']['steps']))")
+          echo "CI lane: $steps"
+          for task in $steps; do
+            run_task "$task"
+          done
+
+      # The compiled contract and the generated client are committed, because
+      # the TypeScript tests and every script read them directly. A commit that
+      # changes the contract and not the artifacts ships a client describing a
+      # contract that no longer exists.
+      - name: Contract artifacts are current
+        run: |
+          if ! git diff --quiet -- smart_contracts/artifacts; then
+            echo "::error::Artifacts differ from a fresh build — run 'poetry run python -m smart_contracts build' and commit."
+            git --no-pager diff --stat -- smart_contracts/artifacts
+            exit 1
+          fi

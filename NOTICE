@@ -1,0 +1,33 @@
+Arcron Rain: scheduled on-chain payouts for Algorand
+Copyright 2026 CorvidLabs
+
+This product includes software developed by CorvidLabs, licensed under the
+Apache License, Version 2.0 (see LICENSE).
+
+------------------------------------------------------------------------------
+Trademarks are NOT covered by the Apache License
+------------------------------------------------------------------------------
+
+No brand assets are vendored here: this repository is contracts, scripts and a
+TypeScript client, with no front end of its own. Where the CorvidLabs name does
+appear is in identifiers — `CORVID_UNIT_PREFIX`, `CORVID_TESTNET_NFT`,
+`CORVID_TESTNET_MINTER`, the labels on the dogfood rains. Those name
+CorvidLabs' own TestNet deployment. They are not a licence to the name.
+
+"Arcron", "CorvidLabs", and the CorvidLabs logo mark and mascot are trademarks,
+not licensed code. The Apache License granted for this repository does **not**
+grant permission to use them. Specifically:
+
+  - You may build, run, fork and modify this software, including for a
+    deployment of your own.
+  - You may not use the Arcron or CorvidLabs names, logo mark or mascot to
+    identify your own project, product or organisation, or in a way that
+    suggests CorvidLabs endorses it.
+
+If you are forking this to run as your own thing, change those identifiers and
+rain labels to your own. They gate and label one specific deployment, so
+leaving them in place would be wrong on the facts as well as on the marks.
+
+This mirrors the usual practice of licensing the code and reserving the
+trademarks; Apache-2.0 §6 already declines to grant trademark rights, and this
+notice states plainly what that applies to here.
