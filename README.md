@@ -431,7 +431,8 @@ has ever been.
 
 ## Spec-driven development
 
-Managed with [spec-sync](https://github.com/CorvidLabs/spec-sync) (strict) and
+Managed with [spec-sync](https://github.com/CorvidLabs/spec-sync) `v6.0.0-rc.12`
+(strict) and
 [fledge](https://github.com/CorvidLabs/fledge) lanes. Every contract has a spec
 under `specs/` covering its public API, invariants, error cases and testing,
 and `specsync check --strict` runs in the `ci` lane: a contract whose surface
