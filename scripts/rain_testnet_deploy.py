@@ -150,15 +150,23 @@ def main(argv: list[str] | None = None) -> None:
             )
         ).abi_return
         logger.info(f"  Opened SPLIT rain {split_id} and WAVE rain {wave_id}")
-        rain.send.deposit(
-            args=DepositArgs(
-                payment=_payment(
-                    algorand, deployer.address, rain.app_address, POT_SEED_MICROALGO
-                ),
-                rain_id=split_id,
+        # Both, not just the SPLIT one. An unseeded rain is not a rain that
+        # starts empty and fills up: `_fire_wave` and `_fire_split` both
+        # return 0 while the pot is below one payout, so the upkeep calls
+        # `draw` on schedule, the rain declines, and nothing anywhere reports
+        # a problem, because an empty pot is a no-op by design rather than a
+        # failure. Hub 770746178 opened its WAVE rain on 2026-08-31 and had
+        # declined sixty-three scheduled draws by 2026-09-02 for exactly this.
+        for pot_id, mode_name in ((split_id, "SPLIT"), (wave_id, "WAVE")):
+            rain.send.deposit(
+                args=DepositArgs(
+                    payment=_payment(
+                        algorand, deployer.address, rain.app_address, POT_SEED_MICROALGO
+                    ),
+                    rain_id=pot_id,
+                )
             )
-        )
-        logger.info(f"  Seeded SPLIT pot with {POT_SEED_MICROALGO} µALGO")
+            logger.info(f"  Seeded {mode_name} pot with {POT_SEED_MICROALGO} µALGO")
     else:
         logger.info(f"  Hub already has {next_id} rain(s); not opening more")
         split_id = 1
