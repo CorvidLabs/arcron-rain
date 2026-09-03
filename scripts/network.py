@@ -16,6 +16,8 @@ import pathlib
 import algokit_utils
 from dotenv import load_dotenv
 
+from scripts import node_retry
+
 logger = logging.getLogger(__name__)
 
 LOCALNET = "localnet"
@@ -249,12 +251,25 @@ def is_dev_mode(algod: object) -> bool:
 
 
 def connect(network: str) -> "algokit_utils.AlgorandClient":
-    """Load the network's env file and return a verified AlgorandClient."""
+    """Load the network's env file and return a verified AlgorandClient.
+
+    The clients this hands out retry a refused request rather than raising it.
+    The public TestNet endpoint sheds a fraction of traffic once its daily
+    quota is gone, so a script that makes a few dozen requests is very likely
+    to lose one: `rain_testnet_deploy` failed on a bare 403 before this was
+    installed. `scripts/node_retry.py` records what was measured and why the
+    policy is what it is.
+    """
     load_network(network)
     algorand = algokit_utils.AlgorandClient.from_environment()
     # Public TestNet endpoints are slow; never build transactions from stale
     # cached suggested params.
     algorand.set_suggested_params_cache_timeout(0)
+    node_retry.install(algorand.client.algod)
+    # `indexer_if_present`, not `indexer`: the latter raises when none is
+    # configured, which is the normal case on LocalNet.
+    node_retry.install(algorand.client.indexer_if_present)
+    # After installing, so the genesis check survives a refusal too.
     assert_network(algorand.client.algod, network)
     return algorand
 
