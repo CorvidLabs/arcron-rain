@@ -3,6 +3,7 @@
 import { describe, expect, test } from 'bun:test';
 
 import { RAIN_METHOD_SIGNATURES } from '../src/rain-abi';
+import { openRainPlan } from '../src/rain-txns';
 import {
   CORVID_TESTNET_MINTER,
   CORVID_TESTNET_NFT,
@@ -512,5 +513,48 @@ describe('every ABI method is reachable', () => {
   test('the exemption list names only methods that exist', () => {
     const known = new Set(Object.keys(RAIN_METHOD_SIGNATURES));
     for (const name of Object.keys(NOT_SENT_FROM_A_UI)) expect(known).toContain(name);
+  });
+});
+
+describe('opening a rain as one group', () => {
+  test('a plain ALGO open is one call and answers from it', () => {
+    const plan = openRainPlan({});
+    expect(plan.calls).toEqual(['createRain']);
+    expect(plan.resultIndex).toBe(0);
+  });
+
+  test('a seeded open puts the deposit last and still answers from the create', () => {
+    const plan = openRainPlan({ seedMicroAlgo: 200_000 });
+    expect(plan.calls).toEqual(['createRain', 'deposit']);
+    // Not 1. `deposit` answers with the pot balance, which would be returned
+    // to a caller expecting a rain id, and 200000 looks like an id.
+    expect(plan.resultIndex).toBe(0);
+  });
+
+  test('an ASA open opts in first, inside the same group', () => {
+    const plan = openRainPlan({ optInAsset: 12345 });
+    expect(plan.calls).toEqual(['optInPrizeAsset', 'createRain']);
+    expect(plan.resultIndex).toBe(1);
+  });
+
+  test('opt-in and seed together keep the create in the middle', () => {
+    const plan = openRainPlan({ optInAsset: 12345, seedMicroAlgo: 200_000 });
+    expect(plan.calls).toEqual(['optInPrizeAsset', 'createRain', 'deposit']);
+    expect(plan.resultIndex).toBe(1);
+  });
+
+  test('the create is always in the group, and always the one that answers', () => {
+    for (const optInAsset of [0, 999]) {
+      for (const seedMicroAlgo of [0, 1, 200_000]) {
+        const plan = openRainPlan({ optInAsset, seedMicroAlgo });
+        expect(plan.calls).toContain('createRain');
+        expect(plan.calls[plan.resultIndex]).toBe('createRain');
+      }
+    }
+  });
+
+  test('zero means absent, so nothing sends an empty opt-in or deposit', () => {
+    const plan = openRainPlan({ optInAsset: 0, seedMicroAlgo: 0 });
+    expect(plan.calls).toEqual(['createRain']);
   });
 });

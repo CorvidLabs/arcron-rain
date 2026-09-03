@@ -118,6 +118,8 @@ export interface CreateRainInput {
   readonly cadence: 'hourly' | 'daily' | 'weekly' | 'monthly';
   readonly mode: 'split' | 'one' | 'wave';
   readonly waveCap: number;
+  /** Pot to open with, in the same group as the create. */
+  readonly seed: number;
 }
 
 const POLL_MS = 5_000;
@@ -538,6 +540,16 @@ export class RainService {
       this.writeError.set('Drip must be positive.');
       return null;
     }
+    // ALGO only. An ASA pot is filled by `deposit_asset`, which carries an
+    // asset transfer rather than a payment, so grouping it with the create
+    // is a different transaction shape. Refused rather than dropped: a seed
+    // silently ignored is how a rain ends up unfunded and quietly idle,
+    // which is the failure this grouping exists to prevent.
+    const seed = Math.max(0, Math.floor((input.seed || 0) * 1e6));
+    if (seed > 0 && prizeAsset > 0) {
+      this.writeError.set('An ASA pot is funded after the rain is open, not with it. Open with a zero pot, then deposit.');
+      return null;
+    }
     let gateCreator = ZERO_ADDRESS;
     if (input.gate === 'corvid') gateCreator = CORVID_TESTNET_MINTER;
     if (input.gate === 'custom') gateCreator = input.gateCreator.trim();
@@ -556,15 +568,21 @@ export class RainService {
     this.writeError.set(null);
     try {
       const algod = this.chain.algod();
+      // Whether the hub already holds the asset is a free read, and it has to
+      // be one: `opt_in_asset` asserts the hub is not opted in, so guessing
+      // wrong reverts the whole open. This used to be a separate signed call
+      // wrapped in a try/catch on the error string, which meant an opt-in
+      // could land and the create that justified it fail, leaving the hub
+      // holding an asset no rain uses and its minimum balance spent on it.
+      let optInAsset = 0;
       if (prizeAsset > 0) {
-        try {
-          await txns.optInPrizeAsset(algod, deployment.appId, signing, prizeAsset);
-        } catch (cause) {
-          const message = httpMessage(cause);
-          if (!message.includes('Already opted in')) throw cause;
-        }
+        const holder = await algod.accountInformation(algosdk.getApplicationAddress(deployment.appId)).do();
+        const held = (holder.assets ?? []).some((asset) => Number(asset.assetId) === prizeAsset);
+        if (!held) optInAsset = prizeAsset;
       }
       const result = await txns.createRain(algod, deployment.appId, signing, {
+        optInAsset,
+        seedMicroAlgo: seed,
         label: encodeLabel(input.label.trim() || 'Rain'),
         gateCreator,
         prizeAsset,
