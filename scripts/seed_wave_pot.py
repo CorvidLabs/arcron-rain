@@ -47,20 +47,39 @@ def read_rain(algod, app_id: int, rain_id: int) -> dict:
     return out
 
 
-def shortfall(rain: dict) -> int:
-    """What the pot needs before `_fire_wave` will pay, or 0 if it already will.
+SPLIT, ONE, WAVE = 0, 1, 2
 
-    Mirrors the contract: unclaimed shares from the last wave count toward the
-    pot, and a wave with nobody in it does not fire at any pot size.
+
+def shortfall(rain: dict) -> tuple[int, str]:
+    """What the pot needs before this rain will pay, and why if it cannot.
+
+    Mirrors the contract per mode rather than assuming one. The first version
+    of this ran WAVE's arithmetic over every rain, so asked about a SPLIT rain
+    with no ticket holders it answered "nobody has said gm this wave", which
+    is true of a field SPLIT does not use and says nothing about why that rain
+    will not fire.
     """
-    if rain["wave_count"] == 0:
-        return 0
-    share = rain["drip"] // rain["wave_count"]
-    if share == 0:
-        return 0
-    paid = share * rain["wave_count"]
-    available = rain["pot"] + rain["last_share"] * rain["wave_unclaimed"]
-    return max(0, paid - available)
+    mode = rain["mode"]
+    if mode == WAVE:
+        if rain["wave_count"] == 0:
+            return 0, "nobody has checked in for this wave, so no pot makes it fire"
+        share = rain["drip"] // rain["wave_count"]
+        if share == 0:
+            return 0, "the drip is smaller than the number of seats, so each share rounds to zero"
+        available = rain["pot"] + rain["last_share"] * rain["wave_unclaimed"]
+        return max(0, share * rain["wave_count"] - available), ""
+    if mode == SPLIT:
+        if rain["tickets"] == 0:
+            return 0, "nobody holds a ticket, so no pot makes it fire"
+        share = rain["drip"] // rain["tickets"]
+        if share == 0:
+            return 0, "the drip is smaller than the ticket count, so each share rounds to zero"
+        return max(0, share * rain["tickets"] - rain["pot"]), ""
+    if rain["prize_locked"] > 0:
+        return 0, "a draw is already open; it needs resolve or abandon, not money"
+    if rain["tickets"] == 0:
+        return 0, "nobody holds a ticket, so no pot makes it fire"
+    return max(0, rain["drip"] - rain["pot"]), ""
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -81,11 +100,11 @@ def main(argv: list[str] | None = None) -> int:
     logger.info(f"  wave_count {rain['wave_count']}  wave_unclaimed {rain['wave_unclaimed']}")
     logger.info(f"  draw_id {rain['draw_id']}  last_rain_round {rain['last_rain_round']}")
 
-    if rain["wave_count"] == 0:
-        logger.info("Nobody has said gm this wave, so no pot makes it fire. Nothing to do.")
+    need, blocked = shortfall(rain)
+    if blocked:
+        logger.info(f"Will not fire: {blocked}. Money is not what it is short of.")
         return 0
 
-    need = shortfall(rain)
     amount = max(need, rain["drip"] * args.waves)
     if need == 0:
         logger.info("The pot already covers a wave; this only extends it.")
@@ -96,11 +115,16 @@ def main(argv: list[str] | None = None) -> int:
         return 0
 
     import algokit_utils
-    from smart_contracts.artifacts.rain.rain_client import DepositArgs
-    from smart_contracts.rain.deploy_config import deploy as deploy_rain
+    from smart_contracts.artifacts.rain.rain_client import DepositArgs, RainClient
 
+    # Built from the client `net.connect` returned, not from `deploy_config`'s
+    # own. That one constructs its AlgorandClient directly, so it never gets
+    # the 403 retry `network.connect` installs, and the first attempt at this
+    # deposit died on a bare `HTTP Error 403` from a public node.
     deployer = algorand.account.from_environment("DEPLOYER")
-    rain_client = deploy_rain(args.app_id)
+    rain_client = algorand.client.get_typed_app_client_by_id(
+        RainClient, app_id=args.app_id, default_sender=deployer.address
+    )
     app_address = rain_client.app_address
     before = algod.account_info(app_address)["amount"]
     logger.info(f"  depositing {amount} as {deployer.address[:14]}... to {app_address[:14]}...")
