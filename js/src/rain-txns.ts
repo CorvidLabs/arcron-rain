@@ -43,14 +43,67 @@ export interface CreateRainParams {
   readonly intervalRounds: number | bigint;
   readonly mode: number | bigint;
   readonly waveCap: number | bigint;
+  /**
+   * Opt the hub into the prize asset in the same group. The caller decides:
+   * `opt_in_asset` asserts the hub is not already opted in, so including it
+   * for an asset the hub holds reverts the whole open.
+   */
+  readonly optInAsset?: number;
+  /**
+   * Seed the new rain's pot in the same group. An unseeded rain is not one
+   * that starts empty and fills up: `_fire_split` and `_fire_wave` return 0
+   * below one payout, so the upkeep calls `draw` on schedule, the rain
+   * declines, and nothing reports a problem. Two rains on the live hub sat
+   * dead this way, one of them for forty-four hours.
+   */
+  readonly seedMicroAlgo?: number;
+}
+
+/** Which calls a grouped open carries, and which one answers. */
+export interface OpenRainPlan {
+  readonly optIn: number;
+  readonly seed: number;
+  /** Index of the `createRain` call among the group's method results. */
+  readonly resultIndex: number;
+  readonly calls: readonly ('optInPrizeAsset' | 'createRain' | 'deposit')[];
+}
+
+/**
+ * The shape of one atomic open.
+ *
+ * Exported so a test drives the function the builder calls rather than a
+ * copy of its arithmetic. The index is the part worth pinning: a group ends
+ * on `deposit` when it seeds, and `deposit` answers with the pot's balance,
+ * so taking the last result hands the caller a balance where it expects a
+ * rain id, and it is a plausible-looking number either way.
+ */
+export function openRainPlan(params: {
+  readonly optInAsset?: number;
+  readonly seedMicroAlgo?: number;
+}): OpenRainPlan {
+  const optIn = params.optInAsset ?? 0;
+  const seed = params.seedMicroAlgo ?? 0;
+  const calls: OpenRainPlan['calls'] = [
+    ...(optIn > 0 ? (['optInPrizeAsset'] as const) : []),
+    'createRain' as const,
+    ...(seed > 0 ? (['deposit'] as const) : []),
+  ];
+  return { optIn, seed, resultIndex: calls.indexOf('createRain'), calls };
 }
 
 async function run(
   algod: algosdk.Algodv2,
   composer: algosdk.AtomicTransactionComposer,
+  /**
+   * Which method call in the group the caller wants the answer from.
+   * Defaults to the last, which is right for every single-call group. A
+   * grouped open ends on `deposit`, whose return is the pot's new balance,
+   * so it names the `createRain` call instead and gets the rain id.
+   */
+  resultIndex = -1,
 ): Promise<CallResult> {
   const result = await composer.execute(algod, 6);
-  const returned = result.methodResults.at(-1);
+  const returned = result.methodResults.at(resultIndex);
   if (returned?.decodeError) throw returned.decodeError;
   return {
     txId: result.txIDs.at(-1) ?? '',
@@ -129,7 +182,25 @@ export async function createRain(
     ...emptyRefs(),
     boxes: [{ appIndex: 0, name: rainBoxName(nextId) }],
   };
+  // One atomic group: opt in if asked, create, seed if asked. Separately
+  // signed, an opt-in that lands before a create that fails leaves the hub
+  // holding an asset no rain uses and its minimum balance spent for it, and
+  // a create that lands without its seed leaves a rain that declines every
+  // draw in silence. Grouped, all of it happens or none does, on one
+  // signature.
+  const { optIn, seed, resultIndex: createIndex } = openRainPlan(params);
   const addCall: CallBuilder = (composer, signer, refs) => {
+    if (optIn > 0) {
+      composer.addMethodCall({
+        appID: appId,
+        method: rainMethod('optInPrizeAsset'),
+        sender: signing.sender,
+        signer,
+        suggestedParams: { ...suggestedParams, fee: BigInt(OPT_IN_FEE), flatFee: true },
+        methodArgs: [BigInt(optIn), payArg(signing, appId, ASSET_OPT_IN_MBR, suggestedParams)],
+        appForeignAssets: [optIn],
+      });
+    }
     composer.addMethodCall({
       appID: appId,
       method: rainMethod('createRain'),
@@ -151,11 +222,24 @@ export async function createRain(
       appAccounts: [...refs.appAccounts],
       boxes: [...refs.boxes],
     });
+    if (seed > 0) {
+      composer.addMethodCall({
+        appID: appId,
+        method: rainMethod('deposit'),
+        sender: signing.sender,
+        signer,
+        suggestedParams: { ...suggestedParams, fee: BigInt(DEPOSIT_FEE), flatFee: true },
+        methodArgs: [payArg(signing, appId, seed, suggestedParams), nextId],
+        boxes: [...refs.boxes],
+      });
+    }
   };
   const resources = await discoverCall(algod, appId, known, addCall);
   const composer = new algosdk.AtomicTransactionComposer();
   addCall(composer, signing.signer, resources);
-  return run(algod, composer);
+  // Not the last result: a seeded open ends on `deposit`, which answers with
+  // the pot's balance. The caller is opening a rain and wants its id.
+  return run(algod, composer, createIndex);
 }
 
 export async function optInPrizeAsset(

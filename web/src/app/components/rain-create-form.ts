@@ -36,6 +36,18 @@ import { CADENCES } from '@corvidlabs/arcron-rain/rain';
               <small>ALGO, or base units if the prize is an ASA</small>
             </label>
 
+            @if (prizeKind() === 'algo') {
+              <label>
+                <span class="eyebrow">Starting pot</span>
+                <input name="seed" type="number" min="0" step="any" value="0.2" />
+                <small>
+                  ALGO, funded in the same group as the create. A rain with an
+                  empty pot declines every drop in silence, so this is not
+                  optional so much as deferred.
+                </small>
+              </label>
+            }
+
             <fieldset class="policy">
               <legend class="eyebrow">Who it falls on</legend>
               <label class="choice">
@@ -224,6 +236,7 @@ export class RainCreateForm {
         prize,
         prizeAsset: Number(value('prizeAsset') || 0),
         drip: Number(value('drip') || 0),
+        seed: Number(value('seed') || 0),
         cadence: this.cadence(),
         mode: mode || 'split',
         waveCap: Number(value('waveCap') || 10),
