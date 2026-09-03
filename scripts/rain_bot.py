@@ -6,37 +6,43 @@ it puts the prize back in.
 a bare Arcron upkeep can do. Somebody still has to supply the beacon
 (`resolve`) and the winner still has to pull their own prize (`claim`). On a
 draw with only one real participant, "somebody" and "the winner" are the same
-account, so this bot holds that account, watches one `rain` app, and does
-three things, in order, every time it runs:
+account, so this bot holds that account, watches one `rain` hub, and does
+three things, in order, for **every rain on it**, every time it runs:
 
-  1. If a draw is open and the beacon round has passed, call `resolve`,
-     supplying the beacon app reference a scheduled call could not attach.
-  2. If a draw's beacon window has closed unresolved, call `abandon` so the
-     prize returns to the pot instead of sitting locked forever.
-  3. If this account has anything allocated (`allocation_of`), `claim` it,
-     then `deposit` the exact amount claimed straight back into the pot.
+  1. If a ONE draw is open and its beacon round has passed, call `resolve`.
+  2. If a ONE draw's beacon window has closed unresolved, call `abandon`, so
+     the prize returns to the pot instead of sitting locked forever.
+  3. If this account is owed anything (`allocation`), `claim` it, then
+     `deposit` the exact amount straight back into the pot it came from.
      `claim` and `deposit` are two transactions, not one atomic group, so
-     what was claimed is recorded to a small local state file first (see
-     `default_pending_path`) and only cleared once the deposit confirms;
-     that way a crash between the two redeposits on the next run instead of
+     what was claimed is recorded to a small local state file first, with
+     the rain it came out of, and cleared only once the deposit confirms;
+     a crash between the two then redeposits on the next run instead of
      stranding a won prize in this account's own wallet forever.
 
 Step 3 is what "circulates" means here, concretely. The pot after a full
-cycle is the pot before it: `draw` reserves the box MBR the winner's
-allocation needs, `claim` releases it back to the pot when the box is
-deleted, and this bot re-deposits the rest. **What does not circulate is
-transaction fees.** `resolve`, `claim` and `deposit` are three signed
-transactions this account pays for out of its own balance, on top of the
-Arcron keeper fee `draw` itself pays out of the upkeep's escrow. Measured at
-the registered cadence (arcron's `docs/releases.md` has the number), that is real
-ALGO leaving the system every cycle, forever. It is the cost of running the
-dogfood, not a bug, and nothing about this design amortises it away.
+cycle is the pot before it. **What does not circulate is transaction fees**,
+which are real ALGO leaving the system every cycle, forever. That is the cost
+of running the dogfood, not a bug, and nothing about this design amortises it.
 
-This bot never opens a draw itself; that is Arcron's job; a keeper executing
-the registered upkeep calls `draw` on its own schedule. This bot only reacts
-to a draw that already exists, which is why every action here is a no-op
-check before it is a transaction: run it as often as you like, including
-from a cron job that overlaps with itself, and a quiet round costs nothing.
+**This module described all of that while doing none of it.** For a while
+`scan_once` read global state, logged one line and returned False, under a
+comment saying drip rain has no resolve and holders claim for themselves,
+while this docstring went on promising three jobs. So a cron reported success
+for work nobody was doing, and rain 1 on the live hub accrued 100,000
+microAlgos that nothing ever pulled. The helpers had also been written for
+the single-rain contract that predates the hub: `read_state` looked for
+`draw_open` and `commit_round` in global state, which now live per rain in
+boxes, and the allocation read used a box key with no rain id in it.
+
+An ASA prize is **named and skipped** rather than claimed: putting it back
+needs `deposit_asset` and a different transaction shape, and a claim with no
+matching redeposit is how a prize leaves a pot for good.
+
+This bot never opens a draw itself; that is Arcron's job. It only reacts to
+what a `draw` already did, which is why every action here is a no-op check
+before it is a transaction: run it as often as you like, including from a
+cron job that overlaps with itself, and a quiet round costs nothing.
 
 Picks its network with --network (or ARCRON_NETWORK), loading .env.localnet
 or .env.testnet. Signs as the account from RAIN_MNEMONIC if set, else
@@ -62,11 +68,13 @@ from algosdk.error import AlgodHTTPError
 from scripts import network as net
 from scripts.arcron import Emitter, Shutdown
 from smart_contracts.artifacts.rain.rain_client import (
+    AbandonArgs,
     ClaimArgs,
     DepositArgs,
     RainClient,
+    ResolveArgs,
 )
-from smart_contracts.rain.contract import TICKET_PREFIX
+from smart_contracts.rain.contract import ONE, SEED_WINDOW, TICKET_PREFIX
 
 # Drip rain has no beacon window. Kept so existing unit tests of the old
 # jackpot bot's predicates can stay until that bot is deleted.
@@ -99,6 +107,73 @@ LOW_BALANCE_MICROALGO = ACCOUNT_MBR_MICROALGO + 360 * CYCLE_COST_MICROALGO
 POLL_SECONDS_DEFAULT = 300
 
 emit = Emitter()
+
+
+SPLIT, ONE, WAVE = 0, 1, 2
+RAIN_PREFIX = b"r"
+# 32 bytes of creator, 32 of gate creator, 32 of label, then uint64s.
+RAIN_HEAD = 96
+RAIN_FIELDS = (
+    "prize_asset", "drip", "interval_rounds", "last_rain_round", "pot", "tickets",
+    "draw_id", "cumulative", "mode", "wave_cap", "wave_count", "last_share",
+    "last_wave_id", "wave_unclaimed", "commit_round", "prize_locked",
+)
+
+
+def read_rain(algod, app_id: int, rain_id: int) -> dict | None:
+    """One rain's box, decoded. A free algod read. None when there is no such rain."""
+    name = RAIN_PREFIX + rain_id.to_bytes(8, "big")
+    try:
+        raw = algod.application_box_by_name(app_id, name)["value"]
+    except AlgodHTTPError as exc:
+        if "box not found" in str(exc).lower():
+            return None
+        raise
+    if isinstance(raw, str):
+        raw = base64.b64decode(raw)
+    out: dict = {}
+    offset = RAIN_HEAD
+    for field in RAIN_FIELDS:
+        out[field] = int.from_bytes(raw[offset:offset + 8], "big")
+        offset += 8
+    return out
+
+
+def read_ticket(algod, app_id: int, rain_id: int, address: str) -> dict | None:
+    """This account's ticket on one rain, or None if it holds none."""
+    name = TICKET_PREFIX + rain_id.to_bytes(8, "big") + encoding.decode_address(address)
+    try:
+        raw = algod.application_box_by_name(app_id, name)["value"]
+    except AlgodHTTPError as exc:
+        if "box not found" in str(exc).lower():
+            return None
+        raise
+    if isinstance(raw, str):
+        raw = base64.b64decode(raw)
+    return {
+        "credit": int.from_bytes(raw[0:8], "big"),
+        "wave_id": int.from_bytes(raw[8:16], "big"),
+        "settled_id": int.from_bytes(raw[16:24], "big"),
+    }
+
+
+def allocation(rain: dict | None, ticket: dict | None) -> int:
+    """What this account can claim on one rain, from two box reads.
+
+    A mirror of the contract's `allocation_of`, kept because a scan that has
+    to simulate once per rain is a scan nobody runs often. Mirrors go stale,
+    so `tests/test_rain_bot.py` runs this against the real contract over a
+    matrix of states rather than trusting the reading.
+    """
+    if rain is None or ticket is None:
+        return 0
+    if rain["mode"] == SPLIT:
+        return max(0, rain["cumulative"] - ticket["credit"])
+    owed = ticket["credit"]
+    if rain["mode"] == WAVE:
+        if ticket["wave_id"] == rain["last_wave_id"] and ticket["settled_id"] != rain["last_wave_id"]:
+            owed += rain["last_share"]
+    return owed
 
 
 def read_state(algod, app_id: int) -> dict:
@@ -155,23 +230,41 @@ def default_pending_path(network: str, app_id: int) -> Path:
     return root / "arcron" / f"rain-bot-pending-{network}-{app_id}.json"
 
 
-def _read_pending(path: Path | None) -> int:
+def _read_pending(path: Path | None) -> tuple[int, int]:
+    """A claimed-but-not-redeposited amount, and the rain it came out of.
+
+    The rain id is not optional bookkeeping. A hub holds several pots, and a
+    redeposit aimed at the wrong one takes money from one rain and gives it
+    to another, which no later run can tell apart from a donation.
+    """
     if path is None or not path.exists():
-        return 0
+        return 0, 0
     try:
-        return int(json.loads(path.read_text()).get("pending_deposit", 0))
+        saved = json.loads(path.read_text())
+        return int(saved.get("pending_deposit", 0)), int(saved.get("rain_id", 0))
     except Exception:
-        return 0
+        return 0, 0
 
 
-def _write_pending(path: Path | None, amount: int) -> None:
+def _write_pending(path: Path | None, amount: int, rain_id: int = 0) -> None:
     if path is None:
         return
     if amount <= 0:
         path.unlink(missing_ok=True)
         return
     path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(json.dumps({"pending_deposit": amount}))
+    path.write_text(json.dumps({"pending_deposit": amount, "rain_id": rain_id}))
+
+
+def _payment(client: "RainClient", sender: str, amount: int):
+    """A payment to the hub, for the deposit that follows a claim."""
+    return client.algorand.create_transaction.payment(
+        algokit_utils.PaymentParams(
+            sender=sender,
+            receiver=client.app_address,
+            amount=algokit_utils.AlgoAmount(micro_algo=amount),
+        )
+    )
 
 
 def should_resolve(state: dict, current_round: int, window: int = BEACON_WINDOW) -> bool:
@@ -230,6 +323,12 @@ def guard_balance(algod, address: str, warn_below: int) -> int:
     return balance
 
 
+def rains_on(algod, app_id: int) -> list[int]:
+    """Every rain id the hub has opened. `next_rain_id` is the count."""
+    state = read_state(algod, app_id)
+    return list(range(1, int(state.get("next_rain_id", 0)) + 1))
+
+
 def scan_once(
     algod,
     client: "RainClient",
@@ -237,27 +336,94 @@ def scan_once(
     address: str,
     pending_path: Path | None = None,
 ) -> bool:
-    """One pass. Returns whether any transaction was sent.
+    """One pass over every rain on the hub. Returns whether anything was sent.
 
-    Every branch starts by asking whether there is anything to do, so a
-    quiet run (no draw open, nothing allocated, nothing pending) signs
-    nothing and costs nothing beyond the free reads above. Safe to call as
-    often as you like, including back-to-back.
+    Every branch starts by asking whether there is anything to do, so a quiet
+    run signs nothing and costs nothing beyond the free box reads. Safe to
+    call as often as you like, including back to back.
+
+    This was a heartbeat for a while: it read global state, logged one line
+    and returned False, under a comment saying drip rain has no resolve and
+    holders claim for themselves. The module docstring above went on
+    describing all three jobs, so the cron reported success for work nobody
+    was doing, and rain 1 on the live hub accrued 100,000 microAlgos that
+    nothing ever pulled.
     """
-    state = read_state(algod, app_id)
     current = algod.status()["last-round"]
-    # Drip rain has no resolve and no second bot. Holders claim themselves.
-    # Kept as a scan so the existing cron unit does not start failing.
-    emit(
-        "idle",
-        f"Round {current}: drip rain; holders claim (tickets={state.get('tickets', 0)} "
-        f"pot={state.get('pot', 0)})",
-        round=current,
-        app_id=app_id,
-        tickets=int(state.get("tickets", 0)),
-        pot=int(state.get("pot", 0)),
-    )
-    return False
+    acted = False
+
+    # A prize claimed but not yet redeposited, from a run that died between
+    # the two. Cleared only once the deposit confirms.
+    pending, pending_rain = _read_pending(pending_path)
+    if pending > 0 and pending_rain > 0:
+        emit("redeposit",
+             f"Round {current}: redepositing {pending} into rain {pending_rain}, "
+             "left by a run that died between claim and deposit",
+             round=current, app_id=app_id, rain_id=pending_rain, amount=pending)
+        client.send.deposit(
+            args=DepositArgs(payment=_payment(client, address, pending), rain_id=pending_rain)
+        )
+        _write_pending(pending_path, 0)
+        acted = True
+
+    for rain_id in rains_on(algod, app_id):
+        rain = read_rain(algod, app_id, rain_id)
+        if rain is None:
+            continue
+
+        # 1 and 2. A ONE draw is locked until somebody supplies the beacon.
+        # Nothing else in this repository calls either, so a rain whose bot
+        # is not running stays locked for the seed window and then forever.
+        if rain["mode"] == ONE and rain["prize_locked"] > 0:
+            commit = rain["commit_round"]
+            if commit < current <= commit + SEED_WINDOW:
+                emit("resolve", f"Round {current}: resolving rain {rain_id}",
+                     round=current, app_id=app_id, rain_id=rain_id)
+                client.send.resolve(args=ResolveArgs(rain_id=rain_id))
+                acted = True
+            elif current > commit + SEED_WINDOW:
+                emit("abandon", f"Round {current}: rain {rain_id} seed window closed; abandoning",
+                     round=current, app_id=app_id, rain_id=rain_id)
+                client.send.abandon(args=AbandonArgs(rain_id=rain_id))
+                acted = True
+            rain = read_rain(algod, app_id, rain_id) or rain
+
+        # 3. Pull what this account is owed and put it straight back in.
+        owed = allocation(rain, read_ticket(algod, app_id, rain_id, address))
+        if owed <= 0:
+            continue
+        if rain["prize_asset"] != 0:
+            # An ASA prize is claimed to this account and redeposited with
+            # deposit_asset, a different transaction shape. Named rather than
+            # attempted, because a claim with no matching redeposit is how a
+            # prize leaves the pot for good.
+            emit("skipped", f"Round {current}: rain {rain_id} owes {owed} of asset "
+                 f"{rain['prize_asset']}, which this bot cannot redeposit",
+                 level=logging.WARNING, round=current, app_id=app_id, rain_id=rain_id, amount=owed)
+            continue
+
+        emit("claim", f"Round {current}: claiming {owed} from rain {rain_id}",
+             round=current, app_id=app_id, rain_id=rain_id, amount=owed)
+        claimed = int(client.send.claim(args=ClaimArgs(rain_id=rain_id, gate_asset=0)).abi_return or 0)
+        acted = True
+        if claimed <= 0:
+            continue
+        # Recorded before the deposit, not after: these are two transactions,
+        # not one group, and a crash between them would otherwise strand the
+        # prize in this account's own wallet with the next run's allocation
+        # reading zero.
+        _write_pending(pending_path, claimed, rain_id)
+        client.send.deposit(
+            args=DepositArgs(payment=_payment(client, address, claimed), rain_id=rain_id)
+        )
+        _write_pending(pending_path, 0)
+        emit("redeposited", f"Round {current}: put {claimed} back into rain {rain_id}",
+             round=current, app_id=app_id, rain_id=rain_id, amount=claimed)
+
+    if not acted:
+        emit("idle", f"Round {current}: nothing to resolve, abandon or claim",
+             round=current, app_id=app_id)
+    return acted
 
 
 def main(argv: list[str] | None = None) -> None:
