@@ -1,5 +1,6 @@
 import { ChangeDetectionStrategy, Component, DestroyRef, inject, output, signal } from '@angular/core';
 
+import { fieldValue } from '../core/form-values';
 import { RainService, type CreateRainInput } from '../core/rain.service';
 import { WalletService } from '../core/wallet.service';
 import { CADENCES } from '@corvidlabs/arcron-rain/rain';
@@ -211,11 +212,7 @@ export class RainCreateForm {
     event.preventDefault();
     if (!this.wallet.connected()) return;
     const form = event.target as HTMLFormElement;
-    const value = (name: string): string => {
-      const field = form.elements.namedItem(name);
-      if (field instanceof HTMLInputElement || field instanceof HTMLSelectElement) return field.value;
-      return '';
-    };
+    const value = (name: string): string => fieldValue(form, name);
     const mode = value('mode') as CreateRainInput['mode'];
     const gate = value('gate') as CreateRainInput['gate'];
     const prize = value('prize') as CreateRainInput['prize'];
