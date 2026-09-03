@@ -94,26 +94,49 @@ def test_read_allocation_decodes_an_existing_box() -> None:
 
 
 def test_pending_deposit_is_zero_with_no_state_path() -> None:
-    assert _read_pending(None) == 0
+    assert _read_pending(None) == (0, 0)
 
 
 def test_pending_deposit_round_trips_through_a_file(tmp_path) -> None:
     path = tmp_path / "nested" / "pending.json"
-    _write_pending(path, 981_100)
-    assert _read_pending(path) == 981_100
+    _write_pending(path, 981_100, 3)
+    assert _read_pending(path) == (981_100, 3)
 
 
 def test_pending_deposit_of_zero_removes_the_file(tmp_path) -> None:
     path = tmp_path / "pending.json"
-    _write_pending(path, 981_100)
+    _write_pending(path, 981_100, 3)
     assert path.exists()
     _write_pending(path, 0)
     assert not path.exists()
-    assert _read_pending(path) == 0
+    assert _read_pending(path) == (0, 0)
 
 
 def test_pending_deposit_survives_a_missing_or_corrupt_file(tmp_path) -> None:
     path = tmp_path / "pending.json"
-    assert _read_pending(path) == 0
+    assert _read_pending(path) == (0, 0)
     path.write_text("not json")
-    assert _read_pending(path) == 0
+    assert _read_pending(path) == (0, 0)
+
+
+def test_a_pending_record_names_the_rain_it_owes(tmp_path) -> None:
+    """A hub has several pots, and a redeposit is aimed at one of them.
+
+    Without the rain id, a run that dies between `claim` and `deposit` has
+    to guess on the way back, and money returned to the wrong pot is money
+    moved from one rain to another that nothing afterwards can tell from a
+    donation.
+    """
+    path = tmp_path / "pending.json"
+    _write_pending(path, 50_000, 2)
+    assert _read_pending(path) == (50_000, 2)
+
+    _write_pending(path, 50_000, 3)
+    assert _read_pending(path) == (50_000, 3)
+
+
+def test_a_pending_record_without_a_rain_is_not_acted_on(tmp_path) -> None:
+    """Older files carry no rain id. Reading 0 is what stops a blind redeposit."""
+    path = tmp_path / "pending.json"
+    path.write_text('{"pending_deposit": 50000}')
+    assert _read_pending(path) == (50_000, 0)
