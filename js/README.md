@@ -77,7 +77,7 @@ bun install
 bun test
 ```
 
-74 tests on 2026-08-31, all in `rain-abi.test.ts`. It reads
+88 tests on 2026-09-03, all in `rain-abi.test.ts`. It reads
 `smart_contracts/artifacts/rain/Rain.arc56.json` from the repository root, so
 the contract has to have been built (`poetry run python -m smart_contracts
 build`) before the suite will load. That coupling is the point: a signature
@@ -92,4 +92,7 @@ demos and `web/scripts/localnet-txns.ts`.
 
 No signing and no wallet handling. `rain-txns.ts` builds an
 `AtomicTransactionComposer` group and takes a `TransactionSigner`, so how a
-person authorises anything is entirely yours.
+person authorises anything is entirely yours. A payment or asset-transfer
+argument is signed by that same function: a second signer on the payment is
+two wallet popups, because `gatherSignatures` treats each function identity
+as a separate prompt.

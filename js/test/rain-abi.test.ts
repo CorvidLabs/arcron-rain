@@ -1,9 +1,10 @@
 /** The signatures the Rain UI calls must match the compiled contract. */
 
 import { describe, expect, test } from 'bun:test';
+import algosdk from 'algosdk';
 
-import { RAIN_METHOD_SIGNATURES } from '../src/rain-abi';
-import { openRainPlan } from '../src/rain-txns';
+import { RAIN_METHOD_SIGNATURES, rainMethod } from '../src/rain-abi';
+import { assetTransferArg, groupSignerCount, openRainPlan, paymentArg } from '../src/rain-txns';
 import {
   CORVID_TESTNET_MINTER,
   CORVID_TESTNET_NFT,
@@ -556,5 +557,171 @@ describe('opening a rain as one group', () => {
   test('zero means absent, so nothing sends an empty opt-in or deposit', () => {
     const plan = openRainPlan({ optInAsset: 0, seedMicroAlgo: 0 });
     expect(plan.calls).toEqual(['createRain']);
+  });
+});
+
+/**
+ * One wallet approval per holder action.
+ *
+ * ATC.gatherSignatures batches by function identity. A payment argument that
+ * still carries the live wallet while the app call uses the empty simulate
+ * signer is two popups: resource discovery signs the payment, then execute
+ * signs the group. These tests pin the grouping the builders have to produce,
+ * and the ATC behaviour that made the bug look like "we are not grouping".
+ */
+describe('one signer per atomic group', () => {
+  const sender = CORVID_TESTNET_MINTER;
+  const suggestedParams: algosdk.SuggestedParams = {
+    fee: 1_000n,
+    flatFee: true,
+    firstValid: 1n,
+    lastValid: 1_001n,
+    genesisID: 'testnet-v1.0',
+    genesisHash: new Uint8Array(32),
+    minFee: 1_000n,
+  };
+
+  function countingSigner(): { signer: algosdk.TransactionSigner; calls: () => number } {
+    let calls = 0;
+    const signer: algosdk.TransactionSigner = async (group, indexes) => {
+      calls += 1;
+      return indexes.map((index) => algosdk.encodeUnsignedSimulateTransaction(group[index]));
+    };
+    return { signer, calls: () => calls };
+  }
+
+  test('paymentArg attaches the signer it was given, not a second one', () => {
+    const empty = algosdk.makeEmptyTransactionSigner();
+    const live = countingSigner().signer;
+    const pay = paymentArg(sender, empty, 1, 28_500, suggestedParams);
+    expect(pay.signer).toBe(empty);
+    expect(pay.signer).not.toBe(live);
+    expect(pay.txn.type).toBe(algosdk.TransactionType.pay);
+  });
+
+  test('an enter-shaped group is one signer for the payment and the app call', () => {
+    const empty = algosdk.makeEmptyTransactionSigner();
+    const composer = new algosdk.AtomicTransactionComposer();
+    composer.addMethodCall({
+      appID: 1,
+      method: rainMethod('enter'),
+      sender,
+      signer: empty,
+      suggestedParams,
+      methodArgs: [paymentArg(sender, empty, 1, TICKET_MBR, suggestedParams), 1n, 0n],
+    });
+    expect(composer.count()).toBe(2);
+    expect(groupSignerCount(composer)).toBe(1);
+  });
+
+  test('a deposit-asset-shaped group is one signer for the axfer and the app call', () => {
+    const empty = algosdk.makeEmptyTransactionSigner();
+    const composer = new algosdk.AtomicTransactionComposer();
+    composer.addMethodCall({
+      appID: 1,
+      method: rainMethod('depositAsset'),
+      sender,
+      signer: empty,
+      suggestedParams,
+      methodArgs: [assetTransferArg(sender, empty, 1, 99, 1_000n, suggestedParams), 1n],
+      appForeignAssets: [99],
+    });
+    expect(composer.count()).toBe(2);
+    expect(groupSignerCount(composer)).toBe(1);
+  });
+
+  test('a seeded ASA open is still one signer across every payment and call', () => {
+    const empty = algosdk.makeEmptyTransactionSigner();
+    const composer = new algosdk.AtomicTransactionComposer();
+    composer.addMethodCall({
+      appID: 1,
+      method: rainMethod('optInPrizeAsset'),
+      sender,
+      signer: empty,
+      suggestedParams,
+      methodArgs: [99n, paymentArg(sender, empty, 1, 100_000, suggestedParams)],
+      appForeignAssets: [99],
+    });
+    composer.addMethodCall({
+      appID: 1,
+      method: rainMethod('createRain'),
+      sender,
+      signer: empty,
+      suggestedParams,
+      methodArgs: [
+        paymentArg(sender, empty, 1, RAIN_BOX_MBR, suggestedParams),
+        encodeLabel('Rain'),
+        sender,
+        99n,
+        1n,
+        10n,
+        SPLIT,
+        0n,
+      ],
+    });
+    composer.addMethodCall({
+      appID: 1,
+      method: rainMethod('deposit'),
+      sender,
+      signer: empty,
+      suggestedParams,
+      methodArgs: [paymentArg(sender, empty, 1, 200_000, suggestedParams), 1n],
+    });
+    expect(composer.count()).toBe(6);
+    expect(groupSignerCount(composer)).toBe(1);
+  });
+
+  test('a payment wired to a second signer is two wallet prompts, not one group', () => {
+    const empty = algosdk.makeEmptyTransactionSigner();
+    const live = countingSigner().signer;
+    const composer = new algosdk.AtomicTransactionComposer();
+    composer.addMethodCall({
+      appID: 1,
+      method: rainMethod('enter'),
+      sender,
+      signer: empty,
+      suggestedParams,
+      methodArgs: [paymentArg(sender, live, 1, TICKET_MBR, suggestedParams), 1n, 0n],
+    });
+    expect(groupSignerCount(composer)).toBe(2);
+  });
+
+  test('ATC.gatherSignatures prompts the live wallet when the payment still carries it', async () => {
+    const empty = algosdk.makeEmptyTransactionSigner();
+    const live = countingSigner();
+    const composer = new algosdk.AtomicTransactionComposer();
+    composer.addMethodCall({
+      appID: 1,
+      method: rainMethod('deposit'),
+      sender,
+      signer: empty,
+      suggestedParams,
+      methodArgs: [paymentArg(sender, live.signer, 1, 1_000_000, suggestedParams), 1n],
+    });
+    await composer.gatherSignatures();
+    expect(live.calls()).toBe(1);
+  });
+
+  test('the same group with one signer asks that signer once, for both txns', async () => {
+    const live = countingSigner();
+    const composer = new algosdk.AtomicTransactionComposer();
+    composer.addMethodCall({
+      appID: 1,
+      method: rainMethod('deposit'),
+      sender,
+      signer: live.signer,
+      suggestedParams,
+      methodArgs: [paymentArg(sender, live.signer, 1, 1_000_000, suggestedParams), 1n],
+    });
+    const signed = await composer.gatherSignatures();
+    expect(live.calls()).toBe(1);
+    expect(signed.length).toBe(2);
+  });
+
+  test('resource discovery does not go through ATC.simulate, which would gather signatures', async () => {
+    const source = await Bun.file(new URL('../src/rain-txns.ts', import.meta.url)).text();
+    expect(source).toContain('encodeUnsignedSimulateTransaction');
+    expect(source).not.toMatch(/probe\.simulate\(/);
+    expect(source).not.toMatch(/composer\.simulate\(/);
   });
 });

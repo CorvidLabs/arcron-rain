@@ -5,6 +5,10 @@
  * enter once (SPLIT/ONE) or check in (WAVE), deposit, claim. ONE still
  * needs `resolve` after the committed round, or `abandon` once that
  * round's seed is too old to read.
+ *
+ * Every holder action is one atomic group and one wallet approval. A payment
+ * or asset-transfer argument is signed by the same `TransactionSigner` as its
+ * app call, and resource discovery simulates unsigned so it never prompts.
  */
 
 import algosdk from 'algosdk';
@@ -112,21 +116,110 @@ async function run(
   };
 }
 
-function payArg(
-  signing: Signing,
+/**
+ * A payment the ABI method consumes, signed by whoever is signing the group.
+ *
+ * `AtomicTransactionComposer.gatherSignatures` batches by function identity.
+ * A payment that still carries the live wallet while the app call uses the
+ * empty simulate signer is two wallet popups for one group: resource
+ * discovery signs the payment, then execute signs the group. The composer
+ * signer is an argument so discovery can pass empty and the real send can
+ * pass the wallet, and both halves of the group always agree.
+ */
+export function paymentArg(
+  sender: string,
+  signer: algosdk.TransactionSigner,
   appId: number,
   amount: number,
   suggestedParams: algosdk.SuggestedParams,
 ): { txn: algosdk.Transaction; signer: algosdk.TransactionSigner } {
   return {
     txn: algosdk.makePaymentTxnWithSuggestedParamsFromObject({
-      sender: signing.sender,
+      sender,
       receiver: algosdk.getApplicationAddress(appId),
       amount,
       suggestedParams,
     }),
-    signer: signing.signer,
+    signer,
   };
+}
+
+/**
+ * Same as `paymentArg` for an ASA transfer into the hub. `deposit_asset`
+ * takes an axfer the way `deposit` takes a pay; wiring it to the live wallet
+ * while the method call uses the empty signer is the same two popups.
+ */
+export function assetTransferArg(
+  sender: string,
+  signer: algosdk.TransactionSigner,
+  appId: number,
+  assetId: number,
+  amount: bigint,
+  suggestedParams: algosdk.SuggestedParams,
+): { txn: algosdk.Transaction; signer: algosdk.TransactionSigner } {
+  return {
+    txn: algosdk.makeAssetTransferTxnWithSuggestedParamsFromObject({
+      sender,
+      receiver: algosdk.getApplicationAddress(appId),
+      assetIndex: assetId,
+      amount,
+      suggestedParams,
+    }),
+    signer,
+  };
+}
+
+/**
+ * How many distinct `TransactionSigner` functions a built group will invoke.
+ *
+ * ATC treats two function objects as two signers even when they would produce
+ * the same signature, and each one is a wallet popup. One is the whole point
+ * of grouping; two is the bug this file exists to not have.
+ */
+export function groupSignerCount(composer: algosdk.AtomicTransactionComposer): number {
+  return new Set(composer.buildGroup().map(({ signer }) => signer)).size;
+}
+
+function assertGroupUsesSigner(
+  composer: algosdk.AtomicTransactionComposer,
+  expected: algosdk.TransactionSigner,
+): void {
+  for (const { signer } of composer.buildGroup()) {
+    if (signer !== expected) {
+      throw new Error(
+        'This group would ask the wallet to sign twice: a payment or asset ' +
+          'transfer carries a different signer from its app call. ' +
+          'AtomicTransactionComposer.gatherSignatures invokes each distinct ' +
+          'signer, and resource discovery would pop a wallet before the real send.',
+      );
+    }
+  }
+}
+
+/**
+ * Simulate a built group without asking any signer.
+ *
+ * `AtomicTransactionComposer.simulate()` calls `gatherSignatures()`. That is
+ * the double-sign: even with `allowEmptySignatures`, a payment argument that
+ * still carries the live wallet is prompted during discovery, then the real
+ * send prompts again. Encoding the group as unsigned simulate blobs never
+ * invokes a signer.
+ */
+async function simulateUnsigned(
+  algod: algosdk.Algodv2,
+  composer: algosdk.AtomicTransactionComposer,
+): Promise<algosdk.modelsv2.SimulateResponse> {
+  const encoded = composer.buildGroup().map(({ txn }) => algosdk.encodeUnsignedSimulateTransaction(txn));
+  const request = new algosdk.modelsv2.SimulateRequest({
+    txnGroups: [
+      new algosdk.modelsv2.SimulateRequestTransactionGroup({
+        txns: encoded.map((bytes) => algosdk.decodeSignedTransaction(bytes)),
+      }),
+    ],
+    allowEmptySignatures: true,
+    allowUnnamedResources: true,
+  });
+  return algod.simulateTransactions(request).do();
 }
 
 type CallBuilder = (
@@ -141,16 +234,11 @@ async function discoverCall(
   known: ResourceRefs,
   addCall: CallBuilder,
 ): Promise<ResourceRefs> {
+  const emptySigner = algosdk.makeEmptyTransactionSigner();
   const probe = new algosdk.AtomicTransactionComposer();
-  addCall(probe, algosdk.makeEmptyTransactionSigner(), known);
-  const { simulateResponse } = await probe.simulate(
-    algod,
-    new algosdk.modelsv2.SimulateRequest({
-      txnGroups: [],
-      allowEmptySignatures: true,
-      allowUnnamedResources: true,
-    }),
-  );
+  addCall(probe, emptySigner, known);
+  assertGroupUsesSigner(probe, emptySigner);
+  const simulateResponse = await simulateUnsigned(algod, probe);
   const group = simulateResponse.txnGroups[0];
   if (group?.failureMessage) {
     throw new Error(`This call would fail, so it was not sent: ${group.failureMessage}`);
@@ -197,7 +285,10 @@ export async function createRain(
         sender: signing.sender,
         signer,
         suggestedParams: { ...suggestedParams, fee: BigInt(OPT_IN_FEE), flatFee: true },
-        methodArgs: [BigInt(optIn), payArg(signing, appId, ASSET_OPT_IN_MBR, suggestedParams)],
+        methodArgs: [
+          BigInt(optIn),
+          paymentArg(signing.sender, signer, appId, ASSET_OPT_IN_MBR, suggestedParams),
+        ],
         appForeignAssets: [optIn],
       });
     }
@@ -208,7 +299,7 @@ export async function createRain(
       signer,
       suggestedParams: { ...suggestedParams, fee: BigInt(CREATE_FEE), flatFee: true },
       methodArgs: [
-        payArg(signing, appId, RAIN_BOX_MBR, suggestedParams),
+        paymentArg(signing.sender, signer, appId, RAIN_BOX_MBR, suggestedParams),
         params.label,
         params.gateCreator,
         BigInt(params.prizeAsset),
@@ -229,7 +320,10 @@ export async function createRain(
         sender: signing.sender,
         signer,
         suggestedParams: { ...suggestedParams, fee: BigInt(DEPOSIT_FEE), flatFee: true },
-        methodArgs: [payArg(signing, appId, seed, suggestedParams), nextId],
+        methodArgs: [
+          paymentArg(signing.sender, signer, appId, seed, suggestedParams),
+          nextId,
+        ],
         boxes: [...refs.boxes],
       });
     }
@@ -256,7 +350,10 @@ export async function optInPrizeAsset(
     sender: signing.sender,
     signer: signing.signer,
     suggestedParams: { ...suggestedParams, fee: BigInt(OPT_IN_FEE), flatFee: true },
-    methodArgs: [BigInt(assetId), payArg(signing, appId, ASSET_OPT_IN_MBR, suggestedParams)],
+    methodArgs: [
+      BigInt(assetId),
+      paymentArg(signing.sender, signing.signer, appId, ASSET_OPT_IN_MBR, suggestedParams),
+    ],
     appForeignAssets: [assetId],
   });
   return run(algod, composer);
@@ -320,7 +417,11 @@ export async function enter(
       sender: signing.sender,
       signer,
       suggestedParams: { ...suggestedParams, fee: BigInt(ENTER_FEE), flatFee: true },
-      methodArgs: [payArg(signing, appId, enterMbr(mode), suggestedParams), rainId, BigInt(gateAsset)],
+      methodArgs: [
+        paymentArg(signing.sender, signer, appId, enterMbr(mode), suggestedParams),
+        rainId,
+        BigInt(gateAsset),
+      ],
       appForeignAssets: [...refs.appForeignAssets],
       appForeignApps: [...refs.appForeignApps],
       appAccounts: [...refs.appAccounts],
@@ -390,7 +491,10 @@ export async function deposit(
       sender: signing.sender,
       signer,
       suggestedParams: { ...suggestedParams, fee: BigInt(DEPOSIT_FEE), flatFee: true },
-      methodArgs: [payArg(signing, appId, microAlgo, suggestedParams), rainId],
+      methodArgs: [
+        paymentArg(signing.sender, signer, appId, microAlgo, suggestedParams),
+        rainId,
+      ],
       boxes: [...refs.boxes],
     });
   };
@@ -410,16 +514,6 @@ export async function depositAsset(
 ): Promise<CallResult> {
   if (baseUnits <= 0n) throw new Error('Deposit something');
   const suggestedParams = await algod.getTransactionParams().do();
-  const transfer = {
-    txn: algosdk.makeAssetTransferTxnWithSuggestedParamsFromObject({
-      sender: signing.sender,
-      receiver: algosdk.getApplicationAddress(appId),
-      assetIndex: assetId,
-      amount: baseUnits,
-      suggestedParams,
-    }),
-    signer: signing.signer,
-  };
   const known: ResourceRefs = {
     appAccounts: [],
     appForeignApps: [],
@@ -433,7 +527,10 @@ export async function depositAsset(
       sender: signing.sender,
       signer,
       suggestedParams: { ...suggestedParams, fee: BigInt(DEPOSIT_FEE), flatFee: true },
-      methodArgs: [transfer, rainId],
+      methodArgs: [
+        assetTransferArg(signing.sender, signer, appId, assetId, baseUnits, suggestedParams),
+        rainId,
+      ],
       appForeignAssets: [...refs.appForeignAssets],
       boxes: [...refs.boxes],
     });
