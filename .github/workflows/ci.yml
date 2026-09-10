@@ -72,9 +72,9 @@ jobs:
       # Rust binary that no hosted runner has and no dependency file installs.
       # Without this step the loop dies on `specsync: command not found`.
       #
-      # `version` has to be given explicitly: the action defaults to `6.0.0`
-      # and no such release exists yet — the 6.0 line is still candidates. It
-      # is the same candidate the arcron repository gates on, deliberately:
+      # `version` is given explicitly so the binary the action installs is the
+      # one this repository gates on rather than whatever the action defaults
+      # to. It is the same version the arcron repository pins, deliberately:
       # these two trees were one tree, they share `.specsync/config.toml`, and
       # two repositories that disagree about what drift means will eventually
       # disagree about the same spec.
@@ -86,9 +86,9 @@ jobs:
       # task still runs in the loop below, so this job's idea of the gate
       # still comes from fledge.toml.
       - name: SpecSync
-        uses: CorvidLabs/spec-sync@v6.0.0-rc.12
+        uses: CorvidLabs/spec-sync@v6.0.0
         with:
-          version: 6.0.0-rc.12
+          version: 6.0.0
           strict: "true"
 
       - name: Run the CI lane's tasks

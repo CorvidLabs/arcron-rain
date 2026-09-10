@@ -1,0 +1,32 @@
+# The trust gate: spec drift, change risk and provenance, in one job.
+#
+# It runs the `verify` lane from fledge.toml, which is the `ci` lane's task
+# list, so this job and CI cannot disagree about what passing means.
+#
+# Both actions are pinned by commit SHA with the tag in a comment. A tag is a
+# movable pointer: whoever can push a tag can change what a gate runs, and a
+# gate that can be changed from outside the repository is not a gate.
+name: trust
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+jobs:
+  trust:
+    runs-on: ubuntu-latest
+    steps:
+      # fetch-depth: 0 because the gate reads history: Augur scores a range and
+      # Attest resolves the reviewed commit. A shallow clone has neither.
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          fetch-depth: 0
+
+      # Trust 1.2.0 already nests SpecSync 6.0.0, so there is nothing to
+      # re-pin here.
+      - uses: CorvidLabs/trust@fcc889f54d8b4892a81af463c5a0250e2be66fc5 # v1.2.0
+        id: trust

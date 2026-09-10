@@ -95,6 +95,13 @@ rain-one-draw = "poetry run python -m scripts.rain_one_draw --network testnet"
 description = "Contract build, unit tests, spec drift check, the TypeScript client and the page. No chain."
 steps = ["build", "test", "spec", "js-install", "js-test", "web-test", "web-build"]
 
+[lanes.verify]
+# The gate lane. It is the `ci` lane's steps and nothing else, because CI runs
+# exactly this list and a second, slightly different list is a list that
+# drifts.
+description = "The gate: contract build, unit tests, spec drift check, the TypeScript client and the page. No chain."
+steps = ["build", "test", "spec", "js-install", "js-test", "web-test", "web-build"]
+
 [lanes.local]
 description = "CI plus the rendered-page audit and the two LocalNet demos (needs algokit localnet start)"
 steps = ["build", "test", "spec", "js-install", "js-test", "web-test", "web-build", "web-render", "smoke-rain", "smoke-community-rain"]
