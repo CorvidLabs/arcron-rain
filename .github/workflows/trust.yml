@@ -1,0 +1,58 @@
+# The trust gate: spec drift, change risk and provenance, in one job.
+#
+# It runs the `verify` lane from fledge.toml, which is the `ci` lane's task
+# list, so this job and CI cannot disagree about what passing means.
+#
+# Both actions are pinned by commit SHA with the tag in a comment. A tag is a
+# movable pointer: whoever can push a tag can change what a gate runs, and a
+# gate that can be changed from outside the repository is not a gate.
+name: trust
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+jobs:
+  trust:
+    runs-on: ubuntu-latest
+    steps:
+      # fetch-depth: 0 because the gate reads history: Augur scores a range and
+      # Attest resolves the reviewed commit. A shallow clone has neither.
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          fetch-depth: 0
+
+      # The `verify` lane is the `ci` lane, so it needs the `ci` job's
+      # toolchain: Python and Poetry for the contract build and the unit
+      # tests, Bun for the workspace install, the TypeScript tests and the
+      # page build. Trust installs Fledge and SpecSync itself; it does not
+      # and cannot install a repository's own language runtimes, so without
+      # these steps the lane dies on `poetry: not found` at its first task.
+      #
+      # Same actions, versions and inputs as ci.yml, so the two jobs run the
+      # same task list on the same toolchain. Pinned by commit SHA with the
+      # tag in a comment, like everything else in this file.
+      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5
+        with:
+          python-version: "3.13"
+
+      - uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2
+
+      - name: Install dependencies
+        run: |
+          pip install "poetry>=2.0,<3.0"
+          poetry install --no-interaction
+          # The `build` task shells out to algokit to compile the contract and
+          # generate the typed client, and no hosted runner has it. Pinned, so
+          # the gate does not follow algokit's next major on its own.
+          pip install "algokit>=2.0,<3.0"
+          algokit --version
+
+      # Trust 1.2.0 already nests SpecSync 6.0.0, so there is nothing to
+      # re-pin here.
+      - uses: CorvidLabs/trust@fcc889f54d8b4892a81af463c5a0250e2be66fc5 # v1.2.0
+        id: trust
