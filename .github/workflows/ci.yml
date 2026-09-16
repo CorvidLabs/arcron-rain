@@ -104,7 +104,7 @@ jobs:
       # is merely unfinished is not a failure here and never should be.
       - name: Intent files are structurally sound
         run: |
-          cargo install human-intent --version 0.3.3 --locked
+          cargo install human-intent --version 0.4.0 --locked
           hi check
 
       - name: Run the CI lane's tasks
