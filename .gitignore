@@ -210,3 +210,8 @@ web-keeper/dist/
 # only, but the rule has to be here first for that to stay true.
 .npmrc
 js/.npmrc
+
+# The rendered intent page. `hi view` regenerates it from hi/*.md on demand,
+# so committing it only creates a second copy of the intent that can disagree
+# with the markdown it came from.
+intent.html

@@ -91,6 +91,22 @@ jobs:
           version: 6.0.0
           strict: "true"
 
+      # `hi check` is the structural gate on the intent files in hi/, and like
+      # SpecSync it is a Rust binary that no hosted runner has and no
+      # dependency file installs. It is not a task in the `ci` lane below
+      # because that lane has to run on a fresh clone with nothing but poetry
+      # and bun, and `cargo install` is neither of those.
+      #
+      # It reads markdown and nothing else, and it fails on structure only:
+      # a duplicate id, a case with no parent, an id colliding with a retired
+      # one, an id-shaped line that is not a valid id, a family a file never
+      # declared, or a criterion stranded outside every section. Intent that
+      # is merely unfinished is not a failure here and never should be.
+      - name: Intent files are structurally sound
+        run: |
+          cargo install human-intent --version 0.3.3 --locked
+          hi check
+
       - name: Run the CI lane's tasks
         run: |
           # Read each command from fledge.toml so this job and `fledge lanes
